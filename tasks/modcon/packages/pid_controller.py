@@ -25,4 +25,19 @@ def PIDController(
     prev_int: float,
     delta_t: float,
 ) -> Tuple[float, float, float, float]:
-    raise NotImplementedError("TODO: Implement this function")
+    # Error: how far are we from the desired heading
+    e = theta_ref - theta_hat
+
+    # Integral: accumulated error over time
+    e_int = prev_int + e * delta_t
+
+    # Derivative: rate of change of error
+    e_der = (e - prev_e) / delta_t if delta_t > 0 else 0.0
+
+    # PID output → angular velocity omega
+    omega = K_P * e + K_I * e_int + K_D * e_der
+
+    # Clamp omega to safe limits
+    omega = np.clip(omega, MIN_OMEGA, MAX_OMEGA)
+
+    return v_0, omega, e, e_int
