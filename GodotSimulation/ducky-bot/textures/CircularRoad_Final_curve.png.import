@@ -2,11 +2,14 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://choh72qmylojb"
+uid="uid://48coomte3ryv"
 path.s3tc="res://.godot/imported/CircularRoad_Final_curve.png-5661f5d9a55a6ebbbd4f0bec197e940c.s3tc.ctex"
 metadata={
 "imported_formats": ["s3tc_bptc"],
 "vram_texture": true
+}
+generator_parameters={
+"md5": "0fa10940c92eaada3af03bd3458ed20a"
 }
 
 [deps]
