@@ -130,7 +130,13 @@ func get_game_state() -> Dictionary:
 		"survival_time": Time.get_unix_time_from_system() - start_time,
 		"total_distance": total_distance,
 		"distance_from_start": start_position.distance_to(global_position),
-		"collision_duck": collision_duck_name
+		"collision_duck": collision_duck_name,
+		"position": {
+			"x": global_position.x,
+			"y": global_position.y,
+			"z": global_position.z,
+		},
+		"yaw": rotation.y,
 	}
 
 func reset_game() -> void:

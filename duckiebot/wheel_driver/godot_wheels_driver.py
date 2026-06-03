@@ -18,6 +18,15 @@ uint8 = int
 float1 = float
 
 
+def _optional_float(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class MotorDirection(Enum):
     RELEASE = 0
     FORWARD = 1
@@ -39,6 +48,10 @@ class GameState:
     distance_traveled: float = 0.0
     distance_from_start: float = 0.0
     collision_duck: str = ""
+    position_x: float | None = None
+    position_y: float | None = None
+    position_z: float | None = None
+    yaw: float | None = None
 
 
 class GodotWheelTransport:
@@ -151,12 +164,17 @@ class GodotWheelTransport:
                     self._on_game_over(self.game_state)
 
             elif msg_type == "state":
+                pos = msg.get("position") or {}
                 self.game_state = GameState(
                     game_over=bool(msg.get("game_over", False)),
                     survival_time=float(msg.get("survival_time", 0)),
                     distance_traveled=float(msg.get("total_distance", 0)),
                     distance_from_start=float(msg.get("distance_from_start", 0)),
                     collision_duck=str(msg.get("collision_duck", "")),
+                    position_x=_optional_float(pos.get("x")),
+                    position_y=_optional_float(pos.get("y")),
+                    position_z=_optional_float(pos.get("z")),
+                    yaw=_optional_float(msg.get("yaw")),
                 )
 
         except Exception as e:
@@ -229,6 +247,22 @@ class GodotWheelTransport:
             print(f"[GodotWheelTransport] change_scene send failed: {e}")
             self.close()
 
+    def send_get_state(self) -> None:
+        """Request current robot pose / odom from Godot (proj-lfi localization anchor)."""
+        self._check_incoming()
+        if not self._ensure_connected():
+            return
+        msg = {"type": "get_state"}
+        payload = json.dumps(msg).encode("utf-8")
+        header = struct.pack("!I", len(payload))
+        try:
+            assert self._sock is not None
+            self._sock.sendall(header + payload)
+            self._check_incoming()
+        except Exception as e:
+            print(f"[GodotWheelTransport] get_state send failed: {e}")
+            self.close()
+
     def is_game_over(self) -> bool:
         self._check_incoming()
         return self.game_state.game_over
@@ -291,6 +325,9 @@ class GodotWheelsDriver(WheelsDriverAbs):
 
     def change_scene(self, scene_path: str) -> None:
         self.transport.send_change_scene(scene_path)
+
+    def request_state(self) -> None:
+        self.transport.send_get_state()
 
     def set_game_over_callback(self, callback: Callable[[GameState], None]) -> None:
         self.transport.set_game_over_callback(callback)

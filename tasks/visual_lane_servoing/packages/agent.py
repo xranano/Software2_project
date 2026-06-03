@@ -176,6 +176,8 @@ class LaneServoingAgent:
             'slice_ys':  [start_y + i * slice_height + slice_height // 2 for i in range(_NUM_SLICES)],
             'is_curve':  is_curve,
             'curve_dir': curve_dir,
+            'lateral_error': self._filtered_error,
+            'lane_detected': not recovery,
         })
 
         return left, right

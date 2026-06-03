@@ -7,19 +7,11 @@ power_limit: 1
 v_max: 0.5
 encoder_resolution: 135
 omega_max: 8.0
-<<<<<<< Updated upstream
 k_P: 5.0
 k_I: 0.1
 k_D: 0.2
 max_omega: 6.0
 v_0: 0.3
-=======
-k_P: 15.0
-k_I: 1
-k_D: 0.2
-max_omega: 3.0
-v_0: 1.0
->>>>>>> Stashed changes
 k_heading: 0.5
 
 

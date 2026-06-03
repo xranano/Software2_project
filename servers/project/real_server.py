@@ -8,7 +8,7 @@ script_dir   = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.join(script_dir, '..', '..')
 sys.path.insert(0, project_root)
 
-from flask import Flask, Response, jsonify
+from flask import Flask, Response, jsonify, request
 import numpy as np
 import cv2
 
@@ -18,8 +18,10 @@ from duckiebot.wheel_driver.wheels_driver_abs import WheelPWMConfiguration
 from duckiebot.led_driver import LEDDriver
 from launcher.ports import find_available_port
 from servers.common import make_frame_generator, shutdown_cleanup, suppress_http_logs
+from servers.templates.project import get_template
 
 import tasks.project.packages.agent as agent
+from tasks.project.packages.robot_motion import hardware
 
 app        = Flask(__name__)
 camera     = None
@@ -38,6 +40,27 @@ def _visualize(frame):
 
 
 generate_frames = make_frame_generator(lambda: camera, _visualize, quality=70, rgb=False)
+
+
+@app.route('/')
+def index():
+    return get_template(title='Project', subtitle='Real Duckiebot')
+
+
+@app.route('/status')
+def status():
+    return jsonify(hardware.get_ui_data())
+
+
+@app.route('/command', methods=['POST'])
+def command():
+    data = request.json or {}
+    key = str(data.get('key', '')).strip().lower()
+    value = str(data.get('value', '')).strip().lower()
+    if key == 'trajectory' and value in ('straight', 'left', 'right'):
+        hardware.set_trajectory(value)
+        return jsonify({'status': 'ok', 'trajectory': value})
+    return jsonify({'status': 'error', 'message': f'Unknown command: {key}={value}'}), 400
 
 
 @app.route('/video')

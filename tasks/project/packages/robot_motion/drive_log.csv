@@ -1,0 +1,1 @@
+t_s,trajectory,pose_x,pose_y,yaw_deg,path_idx,d,phi_deg,curv,v_cmd,omega_cmd,dist_end,ang_end_deg,done
