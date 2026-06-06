@@ -18,7 +18,38 @@ _white_lower = np.array([_h.get('white_lower_h', 0),   _h.get('white_lower_s', 0
 _white_upper = np.array([_h.get('white_upper_h', 0), _h.get('white_upper_s', 0), _h.get('white_upper_v', 0)])
 
 def detect_lane_markings(image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    raise NotImplementedError("TODO: Implement this function")
+    h, w = image.shape[:2]
+
+    gray    = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    hsv     = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    blurred = cv2.GaussianBlur(gray, (0, 0), sigmaX=2)
+
+    sobelx = cv2.Sobel(blurred, cv2.CV_64F, 1, 0)
+    sobely = cv2.Sobel(blurred, cv2.CV_64F, 0, 1)
+    Gmag   = np.sqrt(sobelx**2 + sobely**2)
+
+    mask_mag = Gmag > 50
+
+    mask_yellow_color = cv2.inRange(hsv, _yellow_lower, _yellow_upper)
+    mask_white_color  = cv2.inRange(hsv, _white_lower,  _white_upper)
+
+    # NO half-image masks — color alone distinguishes the two lines
+    mask_left = (
+        mask_mag
+        & (sobelx < 0)
+        & (sobely < 0)
+        & (mask_yellow_color > 0)
+    ).astype(np.float32)
+
+    mask_right = (
+        mask_mag
+        & (sobelx > 0)
+        & (sobely < 0)
+        & (mask_white_color > 0)
+    ).astype(np.float32)
+
+    return mask_left, mask_right
+
 
 
 
