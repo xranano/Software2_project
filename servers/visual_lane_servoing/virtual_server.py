@@ -32,28 +32,46 @@ def _get_student_module():
 
 app = Flask(__name__)
 
-camera  = None
-wheels  = None
-agent   = None
-running = False
+camera     = None
+wheels     = None
+agent      = None
+running    = False
 stop_event = threading.Event()
+
+_control_thread: threading.Thread = None
+
+
+def _control_loop():
+    """Fixed-rate control loop: one wheel command per Godot camera frame.
+
+    Runs in its own thread, independent of the browser / MJPEG stream, so
+    the number of physics ticks between commands is constant regardless of
+    browser state, TCP backpressure, or OS scheduling.
+    """
+    while not stop_event.is_set():
+        if camera is None or agent is None or wheels is None:
+            stop_event.wait(0.05)
+            continue
+
+        ok, frame = camera.read_rgb()
+        if not ok or frame is None:
+            continue
+
+        left, right = agent.compute_commands(frame)
+        if running:
+            wheels.set_wheels_speed(left, right)
+        else:
+            wheels.set_wheels_speed(0.0, 0.0)
 
 
 def visualize(frame):
-    """frame is RGB from Godot camera."""
-    global running
+    """Display-only: uses results already computed by _control_loop."""
     if agent is None or wheels is None:
         return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
-    pwm_left, pwm_right = agent.compute_commands(frame)
-    if running:
-        wheels.set_wheels_speed(pwm_left, pwm_right)
-    else:
-        wheels.set_wheels_speed(0.0, 0.0)
     debug_info = agent.last_debug_info
-
     bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-    return create_lane_visualization(bgr, debug_info, pwm_left, pwm_right)
+    return create_lane_visualization(bgr, debug_info, wheels.left_pwm, wheels.right_pwm)
 
 
 generate_frames = make_frame_generator(lambda: camera, visualize, quality=50)
@@ -74,7 +92,7 @@ def reset():
     if wheels is not None:
         wheels.reset_game()
     if agent is not None:
-        agent._last_steering = 0.0
+        agent.reset()
     if wheels is not None and agent is not None:
         spd = agent.base_speed
         wheels.set_wheels_speed(spd, spd)
@@ -161,7 +179,7 @@ def status():
 
 
 def main():
-    global camera, wheels, agent
+    global camera, wheels, agent, _control_thread
 
     import argparse
     ap = argparse.ArgumentParser(description="Virtual Lane Servoing Server")
@@ -194,6 +212,10 @@ def main():
     print("\n[3/3] Creating agent...")
     agent = LaneServoingAgent()
     print(f"  p_gain={agent.p_gain}, d_gain={agent.d_gain}, base_speed={agent.base_speed}")
+
+    _control_thread = threading.Thread(target=_control_loop, daemon=True, name="lane-control")
+    _control_thread.start()
+    print("  Control loop started (camera-paced, independent of browser)")
 
     web_port = find_available_port(args.port)
     if web_port != args.port:

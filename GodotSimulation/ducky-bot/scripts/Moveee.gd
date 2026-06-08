@@ -37,6 +37,7 @@ var _minimum_player: AudioStreamPlayer = null
 var _current_pitch: float = 1.0
 
 func _ready() -> void:
+	seed(12345)  # Fixed seed for deterministic random numbers
 	gravity = ProjectSettings.get_setting("physics/3d/default_gravity", 9.8)
 	_minimum_player = get_tree().current_scene.get_node_or_null("Minimum")
 	if _minimum_player:

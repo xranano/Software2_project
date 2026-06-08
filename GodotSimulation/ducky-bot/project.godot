@@ -29,6 +29,12 @@ window/vsync/vsync_mode=0
 
 project/assembly_name="Ducky Bot"
 
+[physics]
+
+common/physics_ticks_per_second=60
+common/physics_jitter_fix=0.0
+common/enable_object_picking=false
+
 [input]
 
 move_forward={

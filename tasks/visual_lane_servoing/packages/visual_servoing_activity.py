@@ -43,7 +43,6 @@ def detect_lane_markings(image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
     mask_right = (
         mask_mag
-        & (sobelx > 0)
         & (sobely < 0)
         & (mask_white_color > 0)
     ).astype(np.float32)

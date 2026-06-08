@@ -2,7 +2,6 @@ import os
 import yaml
 import numpy as np
 import cv2
-from collections import deque
 from typing import Tuple
 
 from tasks.visual_lane_servoing.packages import visual_servoing_activity as student
@@ -55,34 +54,51 @@ class LaneServoingAgent:
 
         self.p_gain              = cfg.get('p_gain',              0.1)
         self.d_gain              = cfg.get('d_gain',              0.35)
-        self.max_steer           = cfg.get('max_steer',           0.4)
-        self.base_speed          = cfg.get('base_speed',          0.2)
-        self.curve_speed         = cfg.get('curve_speed',         0.2)
+        self.max_steer           = cfg.get('max_steer',           0.38)
+        self.base_speed          = cfg.get('base_speed',          0.21)
+        self.min_cruise_speed    = cfg.get('min_cruise_speed',    0.17)
+        self.min_wheel_speed     = cfg.get('min_wheel_speed',     0.08)
+        self.turn_speed_ratio    = cfg.get('turn_speed_ratio',    0.12)
+        self.curve_feedforward   = cfg.get('curve_feedforward',   0.12)
         self.curve_threshold     = cfg.get('curve_threshold',     350)
-        self.steering_threshold  = cfg.get('steering_threshold',  0.2)
-        self.curve_boost         = cfg.get('curve_boost',         1.3)
         self.detection_threshold = cfg.get('detection_threshold', 500)
+        self.smooth_alpha        = cfg.get('smooth_alpha',        0.4)
+        self.steer_smooth        = cfg.get('steer_smooth',        0.4)
 
         self.frame_count        = 0
         self._prev_error        = 0.0
         self._filtered_error    = 0.0
+        self._filtered_steering = 0.0
+        self._smooth_left       = None
+        self._smooth_right      = None
         self._lane_half_width   = float(_LINE_OFFSET)
-        self._left_history      = deque(maxlen=3)
-        self._right_history     = deque(maxlen=3)
         self.last_debug_info    = self._empty_debug_info(480, 640)
 
     def _calculate_error(self, yellow_xs, white_xs, left_det, right_det, w):
         if left_det and right_det and yellow_xs and white_xs:
             y_mean = float(np.mean(yellow_xs))
             w_mean = float(np.mean(white_xs))
+
+            # White to the left of yellow → wrong side (intersection / oncoming lane).
+            # Discard white and follow yellow only.
+            if w_mean <= y_mean:
+                error = w / 2.0 - (y_mean + self._lane_half_width)
+                return float(np.clip(error / (w / 2.0), -1.0, 1.0))
+
+            # Both valid: update lane half-width and track the centre.
             measured = (w_mean - y_mean) / 2.0
             if measured > 20:
                 self._lane_half_width = 0.9 * self._lane_half_width + 0.1 * measured
             error = w / 2.0 - (y_mean + w_mean) / 2.0
+
         elif left_det and yellow_xs:
+            # Yellow only: keep yellow at lane_half_width to the left of centre.
             error = w / 2.0 - (float(np.mean(yellow_xs)) + self._lane_half_width)
+
         elif right_det and white_xs:
+            # White only: keep white at lane_half_width to the right of centre.
             error = w / 2.0 - (float(np.mean(white_xs)) - self._lane_half_width)
+
         else:
             error = self._prev_error
 
@@ -94,35 +110,61 @@ class LaneServoingAgent:
         steering = self.p_gain * error + self.d_gain * error_diff
         return float(np.clip(steering, -self.max_steer, self.max_steer))
 
-    def _motor_commands(self, steering: float, recovery: bool, is_curve: bool, both_visible: bool):
-        if recovery:
-            return 0.0, 0.0
+    def _cruise_speed(self, steering: float, is_curve: bool, both_visible: bool) -> float:
+        steer_frac = min(1.0, abs(steering) / self.max_steer) if self.max_steer > 0 else 0.0
+        if is_curve:
+            steer_frac = max(steer_frac, 0.5)
 
-        speed = self.curve_speed if is_curve else self.base_speed
-        
+        speed = self.base_speed * (1.0 - self.turn_speed_ratio * steer_frac)
+        speed = max(speed, self.min_cruise_speed)
+
         if not both_visible:
-            speed *= 0.8
+            speed *= 0.95
 
-        left  = speed - steering
-        right = speed + steering
+        return speed
 
-        if is_curve and abs(steering) > self.steering_threshold:
-            if steering > 0:
-                right *= 5
-            else:
-                left  *= self.curve_boost
+    def _apply_wheel_floor(self, left: float, right: float) -> Tuple[float, float]:
+        min_val = min(left, right)
+        if min_val < self.min_wheel_speed:
+            shift = self.min_wheel_speed - min_val
+            left += shift
+            right += shift
+
+        peak = max(left, right)
+        if peak > 1.0:
+            scale = 1.0 / peak
+            left *= scale
+            right *= scale
 
         return float(np.clip(left, 0.0, 1.0)), float(np.clip(right, 0.0, 1.0))
 
-    def _smooth(self, left, right, both_visible):
-        buf = 2 if both_visible else 1
-        if self._left_history.maxlen != buf:
-            self._left_history  = deque(maxlen=buf)
-            self._right_history = deque(maxlen=buf)
-        self._left_history.append(left)
-        self._right_history.append(right)
-        return (sum(self._left_history)  / len(self._left_history),
-                sum(self._right_history) / len(self._right_history))
+    def _motor_commands(
+        self,
+        steering: float,
+        recovery: bool,
+        both_visible: bool,
+        is_curve: bool,
+    ):
+        if recovery:
+            return 0.0, 0.0
+
+        speed = self._cruise_speed(steering, is_curve, both_visible)
+        diff = float(np.clip(steering, -self.max_steer, self.max_steer))
+
+        left  = speed - diff
+        right = speed + diff
+
+        return self._apply_wheel_floor(left, right)
+
+    def _smooth(self, left: float, right: float) -> Tuple[float, float]:
+        alpha = self.smooth_alpha
+        if self._smooth_left is None:
+            self._smooth_left  = left
+            self._smooth_right = right
+        else:
+            self._smooth_left  = alpha * left  + (1.0 - alpha) * self._smooth_left
+            self._smooth_right = alpha * right + (1.0 - alpha) * self._smooth_right
+        return self._smooth_left, self._smooth_right
 
     def compute_commands(self, image: np.ndarray) -> Tuple[float, float]:
         self.frame_count += 1
@@ -159,14 +201,37 @@ class LaneServoingAgent:
         recovery  = total_pixels  < self.detection_threshold
 
         yellow_xs, white_xs = detect_lines_in_slices(mask_y, mask_w, h)
-        both_visible        = left_det and right_det and not recovery
-        is_curve, curve_dir = detect_curve(yellow_xs, white_xs, self.curve_threshold)
+
+        # White to the left of yellow means wrong-side detection — treat as yellow-only.
+        white_on_wrong_side = (
+            left_det and right_det
+            and yellow_xs and white_xs
+            and float(np.mean(white_xs)) <= float(np.mean(yellow_xs))
+        )
+        effective_right_det = right_det and not white_on_wrong_side
+        both_visible        = left_det and effective_right_det and not recovery
+
+        # Curve detection: prefer yellow when white is discarded.
+        is_curve, curve_dir = detect_curve(
+            yellow_xs,
+            white_xs if not white_on_wrong_side else [],
+            self.curve_threshold,
+        )
 
         raw_error            = self._calculate_error(yellow_xs, white_xs, left_det, right_det, w)
         self._filtered_error = 0.7 * self._filtered_error + 0.3 * raw_error
-        steering             = self._calculate_steering(self._filtered_error)
-        left, right          = self._motor_commands(steering, recovery, is_curve, both_visible)
-        left, right          = self._smooth(left, right, both_visible)
+        steering = self._calculate_steering(self._filtered_error)
+        if is_curve:
+            steering -= curve_dir * self.curve_feedforward
+        steering = float(np.clip(steering, -self.max_steer, self.max_steer))
+        self._filtered_steering = (
+            self.steer_smooth * steering
+            + (1.0 - self.steer_smooth) * self._filtered_steering
+        )
+        left, right = self._motor_commands(
+            self._filtered_steering, recovery, both_visible, is_curve,
+        )
+        left, right = self._smooth(left, right)
 
         slice_height = int(h * 0.35 / _NUM_SLICES)
         start_y      = int(h * _ROI_START)
@@ -184,6 +249,16 @@ class LaneServoingAgent:
         left, right = self.compute_commands(image)
         wheels_driver.set_wheels_speed(left, right)
         return left, right
+
+    def reset(self):
+        self.frame_count        = 0
+        self._prev_error        = 0.0
+        self._filtered_error    = 0.0
+        self._filtered_steering = 0.0
+        self._smooth_left       = None
+        self._smooth_right      = None
+        self._lane_half_width   = float(_LINE_OFFSET)
+        print("[Agent] State reset")
 
     def get_debug_info(self, image: np.ndarray) -> dict:
         return self.last_debug_info
