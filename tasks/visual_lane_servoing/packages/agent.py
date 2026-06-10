@@ -344,6 +344,8 @@ class LaneServoingAgent:
         self.last_debug_info.update({
             'is_curve':  is_curve,
             'curve_dir': curve_dir,
+            'lateral_error': self._filtered_error,
+            'lane_detected': not recovery,
         })
 
         return left, right
