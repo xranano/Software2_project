@@ -210,6 +210,13 @@ class LaneServoingAgent:
                 self.apriltag_error = str(exc)
                 print(f"[AprilTag] Detection error: {exc}")
 
+        # Publish tag state before stop behavior can return early.
+        self.last_debug_info.update({
+            'frame_count':    self.frame_count,
+            'apriltags':      list(self.apriltag_detections),
+            'apriltag_error': self.apriltag_error,
+        })
+
         # ── Stop on AprilTag ──────────────────────────────────────────────────
         # If any (large-enough) tag is currently visible, halt the robot. This is
         # the simplest "reacted to the sign" behaviour and an easy way to confirm
