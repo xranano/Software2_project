@@ -1,4 +1,5 @@
 import os
+import time
 import yaml
 import numpy as np
 import cv2
@@ -62,8 +63,8 @@ class LaneServoingAgent:
         self.curve_feedforward   = cfg.get('curve_feedforward',   0.12)
         self.curve_threshold     = cfg.get('curve_threshold',     350)
         self.detection_threshold = cfg.get('detection_threshold', 500)
-        self.smooth_alpha        = cfg.get('smooth_alpha',        0.4)
-        self.steer_smooth        = cfg.get('steer_smooth',        0.4)
+        self.smooth_alpha        = cfg.get('smooth_alpha',        0.6)
+        self.steer_smooth        = cfg.get('steer_smooth',        0.6)
 
         self.frame_count        = 0
         self._prev_error        = 0.0
@@ -73,6 +74,20 @@ class LaneServoingAgent:
         self._smooth_right      = None
         self._lane_half_width   = float(_LINE_OFFSET)
         self.last_debug_info    = self._empty_debug_info(480, 640)
+
+        # Left-turn state machine: triggered when yellow disappears (intersection)
+        # Phase 'straight' – drive forward for one lane width
+        # Phase 'turning'  – hard left until white line reappears (or timeout)
+        self._yellow_visible_frames  = 0
+        self._left_turn_state        = 'none'   # 'none' | 'straight' | 'turning'
+        self._left_turn_start        = 0.0
+        self._left_turn_cooldown_end = 0.0
+        self._left_straight_duration = cfg.get('left_straight_duration', 1.1)
+        self._left_turn_max_duration = cfg.get('left_turn_max_duration',  2.5)
+        self._left_straight_speed    = cfg.get('left_straight_speed',     0.23)
+        self._left_turn_wheel_inner  = cfg.get('left_turn_wheel_inner',   0.07)
+        self._left_turn_wheel_outer  = cfg.get('left_turn_wheel_outer',   0.26)
+
 
     def _calculate_error(self, yellow_xs, white_xs, left_det, right_det, w):
         if left_det and right_det and yellow_xs and white_xs:
@@ -111,17 +126,7 @@ class LaneServoingAgent:
         return float(np.clip(steering, -self.max_steer, self.max_steer))
 
     def _cruise_speed(self, steering: float, is_curve: bool, both_visible: bool) -> float:
-        steer_frac = min(1.0, abs(steering) / self.max_steer) if self.max_steer > 0 else 0.0
-        if is_curve:
-            steer_frac = max(steer_frac, 0.5)
-
-        speed = self.base_speed * (1.0 - self.turn_speed_ratio * steer_frac)
-        speed = max(speed, self.min_cruise_speed)
-
-        if not both_visible:
-            speed *= 0.95
-
-        return speed
+        return self.base_speed
 
     def _apply_wheel_floor(self, left: float, right: float) -> Tuple[float, float]:
         min_val = min(left, right)
@@ -145,9 +150,6 @@ class LaneServoingAgent:
         both_visible: bool,
         is_curve: bool,
     ):
-        if recovery:
-            return 0.0, 0.0
-
         speed = self._cruise_speed(steering, is_curve, both_visible)
         diff = float(np.clip(steering, -self.max_steer, self.max_steer))
 
@@ -169,7 +171,9 @@ class LaneServoingAgent:
     def compute_commands(self, image: np.ndarray) -> Tuple[float, float]:
         self.frame_count += 1
         bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        now = time.monotonic()
 
+        # ── 1. Lane detection ────────────────────────────────────────────────
         try:
             mask_left, mask_right = student.detect_lane_markings(bgr)
         except Exception as e:
@@ -183,24 +187,77 @@ class LaneServoingAgent:
         white_pixels  = int(np.count_nonzero(mask_w))
         total_pixels  = yellow_pixels + white_pixels
 
+        h, w      = mask_y.shape
+        left_det  = yellow_pixels > 0
+        right_det = white_pixels  > 0
+
+        yellow_xs, white_xs = detect_lines_in_slices(mask_y, mask_w, h)
+
+        yellow_slice_count = len(yellow_xs)
+        white_slice_count  = len(white_xs)
+
+        # ── Always update debug visualizations ───────────────────────────────
         combined = np.clip(mask_left + mask_right, 0, 1)
+        slice_height = int(h * 0.35 / _NUM_SLICES)
+        start_y      = int(h * _ROI_START)
         self.last_debug_info = {
             'roi':               image,
             'lane_mask':         (combined * 255).astype(np.uint8),
             'white_mask':        mask_w,
             'yellow_mask':       mask_y,
+            'red_mask':          np.zeros((h, w), dtype=np.uint8),
+            'red_px':            0,
+            'red_line':          False,
             'total_lane_pixels': total_pixels,
             'lateral_error':     float(np.clip(self._prev_error, -1.0, 1.0)),
             'lane_detected':     total_pixels >= self.detection_threshold,
             'frame_count':       self.frame_count,
+            'yellow_xs':         yellow_xs,
+            'white_xs':          white_xs,
+            'slice_ys':          [start_y + i * slice_height + slice_height // 2 for i in range(_NUM_SLICES)],
+            'is_curve':          False,
+            'curve_dir':         0,
         }
 
-        h, w      = mask_y.shape
-        left_det  = yellow_pixels > 0
-        right_det = white_pixels  > 0
-        recovery  = total_pixels  < self.detection_threshold
+        # ── Yellow-end tracker (intersection detection) ───────────────────────
+        _YELLOW_MIN_FRAMES = 8
+        if yellow_slice_count > 0:
+            self._yellow_visible_frames = min(self._yellow_visible_frames + 1, 999)
+        else:
+            if (self._yellow_visible_frames >= _YELLOW_MIN_FRAMES
+                    and self._left_turn_state == 'none'
+                    and now >= self._left_turn_cooldown_end):
+                self._left_turn_state = 'straight'
+                self._left_turn_start = now
+                print("[Agent] Yellow gone — left turn: driving straight")
+            self._yellow_visible_frames = 0
 
-        yellow_xs, white_xs = detect_lines_in_slices(mask_y, mask_w, h)
+        # ── Left-turn state machine ───────────────────────────────────────────
+        if self._left_turn_state == 'straight':
+            elapsed = now - self._left_turn_start
+            if elapsed < self._left_straight_duration:
+                s = self._left_straight_speed
+                return s, s
+            self._left_turn_state = 'turning'
+            self._left_turn_start = now
+            print("[Agent] Left turn: now turning")
+
+        if self._left_turn_state == 'turning':
+            elapsed = now - self._left_turn_start
+            # Exit: white line reappears OR hard timeout
+            white_reappeared = white_slice_count >= 2
+            timed_out        = elapsed >= self._left_turn_max_duration
+            if white_reappeared or timed_out:
+                self._left_turn_state        = 'none'
+                self._left_turn_cooldown_end = now + 3.0
+                self._yellow_visible_frames  = 0
+                reason = "white reappeared" if white_reappeared else "timeout"
+                print(f"[Agent] Left turn done ({reason}) — resuming lane follow")
+            else:
+                return self._left_turn_wheel_inner, self._left_turn_wheel_outer
+        # ─────────────────────────────────────────────────────────────────────
+
+        recovery  = total_pixels < self.detection_threshold
 
         # White to the left of yellow means wrong-side detection — treat as yellow-only.
         white_on_wrong_side = (
@@ -233,12 +290,7 @@ class LaneServoingAgent:
         )
         left, right = self._smooth(left, right)
 
-        slice_height = int(h * 0.35 / _NUM_SLICES)
-        start_y      = int(h * _ROI_START)
         self.last_debug_info.update({
-            'yellow_xs': yellow_xs,
-            'white_xs':  white_xs,
-            'slice_ys':  [start_y + i * slice_height + slice_height // 2 for i in range(_NUM_SLICES)],
             'is_curve':  is_curve,
             'curve_dir': curve_dir,
         })
@@ -251,13 +303,17 @@ class LaneServoingAgent:
         return left, right
 
     def reset(self):
-        self.frame_count        = 0
-        self._prev_error        = 0.0
-        self._filtered_error    = 0.0
-        self._filtered_steering = 0.0
-        self._smooth_left       = None
-        self._smooth_right      = None
-        self._lane_half_width   = float(_LINE_OFFSET)
+        self.frame_count             = 0
+        self._prev_error             = 0.0
+        self._filtered_error         = 0.0
+        self._filtered_steering      = 0.0
+        self._smooth_left            = None
+        self._smooth_right           = None
+        self._lane_half_width        = float(_LINE_OFFSET)
+        self._yellow_visible_frames  = 0
+        self._left_turn_state        = 'none'
+        self._left_turn_start        = 0.0
+        self._left_turn_cooldown_end = 0.0
         print("[Agent] State reset")
 
     def get_debug_info(self, image: np.ndarray) -> dict:
@@ -269,6 +325,9 @@ class LaneServoingAgent:
             'lane_mask':         np.zeros((h, w),    dtype=np.uint8),
             'white_mask':        np.zeros((h, w),    dtype=np.uint8),
             'yellow_mask':       np.zeros((h, w),    dtype=np.uint8),
+            'red_mask':          np.zeros((h, w),    dtype=np.uint8),
+            'red_px':            0,
+            'red_line':          False,
             'total_lane_pixels': 0,
             'lateral_error':     0.0,
             'lane_detected':     False,
