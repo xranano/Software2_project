@@ -35,3 +35,4 @@ def should_stop(detections: List[Detection], img_size: int) -> Tuple[bool, str]:
         )
         return True, reason
     return False, "no qualifying obstacle in path"
+

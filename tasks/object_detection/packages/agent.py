@@ -346,3 +346,4 @@ class ObjectDetectionAgent:
             )
             self.net.setInput(blob)
             return self.net.forward()
+

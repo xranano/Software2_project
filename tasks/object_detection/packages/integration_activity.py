@@ -2,7 +2,7 @@ from typing import Tuple
 
 # Path to the trained model weights (.onnx file).
 # Relative paths resolve from the project root.
-MODEL_PATH = "tasks/object_detection/models/best.onnx"
+MODEL_PATH = "tasks/object_detection/model/best.onnx"
 
 # ── Tuning knobs ──────────────────────────────────────────────────────────────
 
