@@ -6,6 +6,7 @@ import cv2
 from typing import Tuple
 
 from tasks.visual_lane_servoing.packages import visual_servoing_activity as student
+from tasks.visual_lane_servoing.packages.apriltag_detector import AprilTagDetector
 from tasks.visual_lane_servoing.packages.cuvrve_behavior import detect_curve
 
 _CONFIG_FILE = os.path.normpath(os.path.join(
@@ -65,6 +66,13 @@ class LaneServoingAgent:
         self.detection_threshold = cfg.get('detection_threshold', 500)
         self.smooth_alpha        = cfg.get('smooth_alpha',        0.6)
         self.steer_smooth        = cfg.get('steer_smooth',        0.6)
+        self.apriltag_enabled    = cfg.get('apriltag_enabled',    True)
+        self.apriltag_interval   = max(1, int(cfg.get('apriltag_interval', 3)))
+        self.apriltag_min_area   = float(cfg.get('apriltag_min_area', 50.0))
+        # When True, stop the robot whenever an AprilTag is currently visible.
+        self.apriltag_stop       = cfg.get('apriltag_stop',       True)
+        # Only stop for tags at least this large (pixels^2); 0 = any detected tag.
+        self.apriltag_stop_area  = float(cfg.get('apriltag_stop_area', 0.0))
 
         self.frame_count        = 0
         self._prev_error        = 0.0
@@ -74,6 +82,16 @@ class LaneServoingAgent:
         self._smooth_right      = None
         self._lane_half_width   = float(_LINE_OFFSET)
         self.last_debug_info    = self._empty_debug_info(480, 640)
+        self.apriltag_detections = []
+        self.apriltag_error      = None
+        self._apriltag_detector  = None
+        self._last_apriltag_ids  = ()
+        if self.apriltag_enabled:
+            try:
+                self._apriltag_detector = AprilTagDetector(self.apriltag_min_area)
+            except Exception as exc:
+                self.apriltag_error = str(exc)
+                print(f"[AprilTag] Disabled: {exc}")
 
         # Left-turn state machine: triggered when yellow disappears (intersection)
         # Phase 'straight' – drive forward for one lane width
@@ -173,6 +191,37 @@ class LaneServoingAgent:
         bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         now = time.monotonic()
 
+        if (self._apriltag_detector is not None
+                and self.frame_count % self.apriltag_interval == 0):
+            try:
+                detections = self._apriltag_detector.detect(bgr)
+                self.apriltag_detections = [detection.as_dict() for detection in detections]
+                self.apriltag_error = None
+                detected_ids = tuple(detection.tag_id for detection in detections)
+                if detected_ids != self._last_apriltag_ids:
+                    if detected_ids:
+                        ids = ", ".join(str(tag_id) for tag_id in detected_ids)
+                        print(f"[AprilTag] Detected ID(s): {ids}")
+                    elif self._last_apriltag_ids:
+                        print("[AprilTag] Tags no longer visible")
+                    self._last_apriltag_ids = detected_ids
+            except Exception as exc:
+                self.apriltag_detections = []
+                self.apriltag_error = str(exc)
+                print(f"[AprilTag] Detection error: {exc}")
+
+        # ── Stop on AprilTag ──────────────────────────────────────────────────
+        # If any (large-enough) tag is currently visible, halt the robot. This is
+        # the simplest "reacted to the sign" behaviour and an easy way to confirm
+        # detection works on the real bot. Uses the persisted detection list, so
+        # it stays stopped between detection frames too.
+        if self.apriltag_stop and self.apriltag_detections:
+            if any(tag['area'] >= self.apriltag_stop_area
+                   for tag in self.apriltag_detections):
+                self._smooth_left = self._smooth_right = 0.0
+                self._filtered_steering = 0.0
+                return 0.0, 0.0
+
         # ── 1. Lane detection ────────────────────────────────────────────────
         try:
             mask_left, mask_right = student.detect_lane_markings(bgr)
@@ -217,6 +266,8 @@ class LaneServoingAgent:
             'slice_ys':          [start_y + i * slice_height + slice_height // 2 for i in range(_NUM_SLICES)],
             'is_curve':          False,
             'curve_dir':         0,
+            'apriltags':         list(self.apriltag_detections),
+            'apriltag_error':    self.apriltag_error,
         }
 
         # ── Yellow-end tracker (intersection detection) ───────────────────────
@@ -314,6 +365,9 @@ class LaneServoingAgent:
         self._left_turn_state        = 'none'
         self._left_turn_start        = 0.0
         self._left_turn_cooldown_end = 0.0
+        self.apriltag_detections     = []
+        self.apriltag_error          = None
+        self._last_apriltag_ids      = ()
         print("[Agent] State reset")
 
     def get_debug_info(self, image: np.ndarray) -> dict:
@@ -332,4 +386,6 @@ class LaneServoingAgent:
             'lateral_error':     0.0,
             'lane_detected':     False,
             'frame_count':       0,
+            'apriltags':         [],
+            'apriltag_error':    None,
         }

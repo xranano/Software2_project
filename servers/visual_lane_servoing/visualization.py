@@ -56,6 +56,18 @@ def create_lane_visualization(
         if i < len(sy_list):
             cv2.circle(cam, (int(x * scale_x), int(sy_list[i] * scale_y)), 6, (255, 255, 255), -1)
 
+    for tag in debug_info.get('apriltags', []):
+        corners = np.asarray(tag.get('corners', []), dtype=np.float32)
+        if corners.shape != (4, 2):
+            continue
+        corners[:, 0] *= scale_x
+        corners[:, 1] *= scale_y
+        polygon = corners.astype(np.int32).reshape((-1, 1, 2))
+        cv2.polylines(cam, [polygon], True, (0, 255, 0), 2)
+        center = np.mean(corners, axis=0).astype(int)
+        cv2.putText(cam, f"Tag {tag.get('id')}", (center[0] + 5, center[1] - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
+
     # ── Panel 2 (top-right): Red detections on camera frame ──────────────────
     red_vis = cv2.resize(red_detected, (display_w, display_h))
     roi_line_y = int(display_h * 0.75)
@@ -124,6 +136,12 @@ def _info_strip(width, debug_info, pwm_left, pwm_right):
         detected = debug_info['lane_detected']
         cv2.putText(canvas, "LANE OK" if detected else "NO LANE",
                     (20, 105), font, 0.5, (0, 255, 0) if detected else (0, 165, 255), 1)
+    tags = debug_info.get('apriltags', [])
+    if tags:
+        tag_ids = ",".join(str(tag.get('id')) for tag in tags)
+        cv2.putText(canvas, f"APRILTAG: {tag_ids}", (110, 105), font, 0.5, (0, 255, 0), 1)
+    elif debug_info.get('apriltag_error'):
+        cv2.putText(canvas, "APRILTAG ERROR", (110, 105), font, 0.5, (0, 0, 255), 1)
     cv2.putText(canvas, f"px:{debug_info['total_lane_pixels']}  f:{debug_info.get('frame_count',0)}",
                 (300, 105), font, 0.4, (200, 200, 200), 1)
 

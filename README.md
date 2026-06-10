@@ -86,12 +86,11 @@ Godot is downloaded automatically on the first run. A URL is printed in the term
 ---
 ```bash
 # By bot hostname (.local mDNS)
-python launch.py --run --bot <bot_name> 
+python3 launch.py --run --bot <bot_name> 
                  --task <TASK NAME>
 
 # By IP address
-python launch.py --run --host 192.168.1.100 
-                 --task <TASK NAME>
+python3 launch.py --run --host 172.20.10.2 --task visual_lane_servoing
 ```
 
 This packages the task, transfers it to the robot over HTTP, and starts the server. The terminal prints the web interface URL when ready.

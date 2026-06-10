@@ -10,3 +10,6 @@ p_gain: 0.5
 smooth_alpha: 0.6
 steer_smooth: 0.6
 turn_speed_ratio: 0.0
+apriltag_enabled: true
+apriltag_interval: 3
+apriltag_min_area: 50.0
