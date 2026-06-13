@@ -1,8 +1,9 @@
+# ── Original working values (do not change these) ─────────────────────────────
 base_speed: 0.23
 curve_feedforward: 0.12
 curve_threshold: 350
 d_gain: 0.58
-detection_threshold: 40
+detection_threshold: 500
 max_steer: 0.2
 min_cruise_speed: 0.23
 min_wheel_speed: 0.08
@@ -13,3 +14,27 @@ turn_speed_ratio: 0.0
 apriltag_enabled: true
 apriltag_interval: 3
 apriltag_min_area: 50.0
+
+# ── New: sign behavior ─────────────────────────────────────────────────────────
+# Tag area (px²) must exceed this before a behavior fires.
+# Raise if bot reacts too early to distant signs; lower if it misses them.
+apriltag_act_area: 800.0
+# Seconds before the same tag ID can trigger again.
+apriltag_cooldown: 5.0
+# Yield sign: reduced speed and how long to hold it
+yield_speed: 0.13
+yield_duration: 2.0
+
+# ── Left-turn FSM (unchanged from original) ────────────────────────────────────
+left_straight_duration: 1.1
+left_straight_speed: 0.23
+left_turn_max_duration: 2.5
+left_turn_wheel_inner: 0.07
+left_turn_wheel_outer: 0.26
+
+# ── Right-turn FSM (new) ───────────────────────────────────────────────────────
+right_straight_duration: 0.6
+right_straight_speed: 0.23
+right_turn_max_duration: 2.0
+right_turn_wheel_inner: 0.26
+right_turn_wheel_outer: 0.07

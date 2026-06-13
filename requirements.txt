@@ -2,7 +2,7 @@
 # Install: pip install -r requirements.txt
 
 flask
-opencv-python<4.10
+opencv-contrib-python<4.10
 numpy>=1.24.0,<2
 pyyaml
 requests
