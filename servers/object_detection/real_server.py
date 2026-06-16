@@ -16,6 +16,7 @@ from flask import Flask, Response, render_template_string, jsonify, request
 from tasks.visual_lane_servoing.packages.agent import LaneServoingAgent
 from tasks.object_detection.packages.agent import ObjectDetectionAgent, CLASS_NAMES
 from tasks.object_detection.packages.stop_activity import should_stop as student_should_stop
+from tasks.object_detection.packages.robot_detector import BlueRobotDetector
 from servers.object_detection.visualization import draw_detections, draw_status_overlay
 from servers.templates.object_detection import OBJECT_DETECTION_TEMPLATE as HTML_TEMPLATE
 
@@ -29,6 +30,7 @@ from servers.common import make_frame_generator, shutdown_cleanup, suppress_http
 app        = Flask(__name__)
 lane_agent = None
 det_agent  = None
+robot_detector = None
 camera     = None
 wheels     = None
 running    = False
@@ -40,6 +42,7 @@ _last_detections = []
 _detection_lock  = threading.Lock()
 _stopped_by_det  = False
 _stop_reason     = ''
+_robot_blue_px   = 0
 
 keys_pressed      = {'up': False, 'down': False, 'left': False, 'right': False}
 _keys_lock        = threading.Lock()
@@ -100,7 +103,7 @@ def _should_stop(detections, frame_h: int):
 
 
 def visualize(frame_bgr):
-    global _stopped_by_det, _stop_reason
+    global _stopped_by_det, _stop_reason, _robot_blue_px
 
     if wheels is None:
         return draw_status_overlay(frame_bgr, 'Initializing...')
@@ -125,6 +128,18 @@ def visualize(frame_bgr):
         pwm_left, pwm_right = lane_agent.compute_commands(frame_rgb)
 
         should_stop, reason = _should_stop(detections, det_agent.img_size if det_agent else frame_bgr.shape[0])
+
+        if robot_detector is not None:
+            robot_ahead, _robot_blue_px = robot_detector.detect(frame_bgr)
+            if robot_ahead and not should_stop:
+                should_stop = True
+                reason = "robot ahead (blue px={})".format(_robot_blue_px)
+            if lane_agent.frame_count % 30 == 0:
+                print("[Robot] enabled={} blue_area={} threshold={} -> {}".format(
+                    robot_detector.enabled, _robot_blue_px,
+                    robot_detector.area_threshold,
+                    "STOP" if robot_ahead else "clear"))
+
         _stopped_by_det = should_stop
         _stop_reason    = reason
 
@@ -141,7 +156,29 @@ def visualize(frame_bgr):
                   for (x1, y1, x2, y2), s, c in detections]
         draw_detections(frame_bgr, scaled)
 
+    _draw_robot_overlay(frame_bgr)
+
     return frame_bgr
+
+
+def _draw_robot_overlay(frame_bgr):
+    """Draw the blue-detection ROI and the single largest blue blob for tuning."""
+    if robot_detector is None:
+        return
+    x0, y0, x1, y1 = robot_detector.last_roi
+    cv2.rectangle(frame_bgr, (x0, y0), (x1, y1), (160, 160, 160), 1)
+    triggered = _stopped_by_det and 'robot' in _stop_reason
+    color = (0, 0, 255) if triggered else (255, 200, 0)
+    if robot_detector.last_bbox is not None:
+        bx1, by1, bx2, by2 = robot_detector.last_bbox
+        cv2.rectangle(frame_bgr, (bx1, by1), (bx2, by2), color, 2)
+    cv2.putText(
+        frame_bgr,
+        "robot blue area: {} / {}".format(robot_detector.last_blue_pixels,
+                                          robot_detector.area_threshold),
+        (10, frame_bgr.shape[0] - 10),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2, cv2.LINE_AA,
+    )
 
 
 generate_frames = make_frame_generator(lambda: camera, visualize, quality=50, rgb=False)
@@ -195,6 +232,15 @@ def set_threshold():
         det_agent.conf_threshold = float(value)
     return jsonify({'conf_threshold': det_agent.conf_threshold if det_agent else None})
 
+@app.route('/set_robot_threshold', methods=['POST'])
+def set_robot_threshold():
+    value = request.json.get('value') if request.json else None
+    if robot_detector and value is not None:
+        robot_detector.area_threshold = int(value)
+    return jsonify({
+        'robot_blue_area_threshold': robot_detector.area_threshold if robot_detector else None
+    })
+
 @app.route('/status')
 def status():
     with _detection_lock:
@@ -207,6 +253,7 @@ def status():
         'trt_building':         getattr(det_agent, 'trt_building', False) if det_agent else False,
         'stopped_by_detection': _stopped_by_det,
         'stop_reason':          _stop_reason,
+        'robot_blue_pixels':    _robot_blue_px,
         'conf_threshold': det_agent.conf_threshold if det_agent else 0.5,
         'detections': [
             {'class': CLASS_NAMES.get(c, str(c)), 'score': round(s, 3), 'bbox': list(b)}
@@ -235,20 +282,34 @@ def main():
 
     def _init_camera():
         global camera
-        cam = CameraDriver()
-        cam.start()
-        camera = cam
-        print('[Init] Camera ready')
+        try:
+            cam = CameraDriver()
+            cam.start()
+            camera = cam
+            print('[Init] Camera ready')
+        except Exception as exc:
+            print('[Init] Camera FAILED: {}'.format(exc))
+            print('[Init] Stop any other task, wait 10s, then redeploy. '
+                  'If it persists, power-cycle the bot.')
 
     def _init_agents():
-        global lane_agent, det_agent
-        lane_agent = LaneServoingAgent()
-        print(f'[Init] Lane agent ready (speed={lane_agent.base_speed})')
-        det_agent = ObjectDetectionAgent()
-        if det_agent.model_loaded:
-            print(f'[Init] Detection model ready ({det_agent.img_size}px)')
-        else:
-            print(f'[Init] Detection model: {det_agent.load_error}')
+        global lane_agent, det_agent, robot_detector
+        try:
+            lane_agent = LaneServoingAgent()
+            print('[Init] Lane agent ready (speed={})'.format(lane_agent.base_speed))
+            robot_detector = BlueRobotDetector()
+            print('[Init] Robot (blue) detector ready '
+                  '(enabled={}, area_threshold={})'.format(
+                      robot_detector.enabled, robot_detector.area_threshold))
+            det_agent = ObjectDetectionAgent()
+            if det_agent.model_loaded:
+                print('[Init] Detection model ready ({}px)'.format(det_agent.img_size))
+            else:
+                print('[Init] Detection model: {}'.format(det_agent.load_error))
+        except Exception as exc:
+            print('[Init] Agent setup FAILED: {}'.format(exc))
+            import traceback
+            traceback.print_exc()
 
     threading.Thread(target=_init_wheels,      daemon=True).start()
     threading.Thread(target=_init_camera,      daemon=True).start()

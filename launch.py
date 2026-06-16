@@ -321,6 +321,14 @@ def _bot_host(target):
     return target if target.replace('.', '').isdigit() else f"{target}.local"
 
 
+# Some task servers import packages from other tasks. Those cross-task
+# dependencies must be shipped alongside the task being deployed, otherwise the
+# bot runs whatever (possibly stale) copy already exists in its tree.
+TASK_DEPENDENCIES = {
+    'object_detection': ['visual_lane_servoing'],
+}
+
+
 def package_task(task_name):
     print(f"Packaging task: {task_name}")
     task_packages_dir = os.path.join(PROJECT_ROOT, 'tasks', task_name, 'packages')
@@ -341,6 +349,20 @@ def package_task(task_name):
     with tarfile.open(fileobj=buf, mode='w:gz') as tar:
         print(f"   Adding packages: tasks/{task_name}/packages/")
         tar.add(task_packages_dir, arcname=f'tasks/{task_name}/packages', filter=no_pycache)
+
+        for dep_task in TASK_DEPENDENCIES.get(task_name, []):
+            dep_packages_dir = os.path.join(PROJECT_ROOT, 'tasks', dep_task, 'packages')
+            if os.path.exists(dep_packages_dir):
+                print(f"   Adding dependency packages: tasks/{dep_task}/packages/")
+                tar.add(dep_packages_dir, arcname=f'tasks/{dep_task}/packages', filter=no_pycache)
+            else:
+                print(f"   Warning: dependency packages not found: {dep_packages_dir}")
+
+        task_server_dir = os.path.join(PROJECT_ROOT, 'servers', task_name)
+        if os.path.exists(task_server_dir):
+            print(f"   Adding server: servers/{task_name}/")
+            tar.add(task_server_dir, arcname=f'servers/{task_name}', filter=no_pycache)
+
         if os.path.exists(config_dir):
             print(f"   Adding configs: config/")
             tar.add(config_dir, arcname='config', filter=no_pycache)

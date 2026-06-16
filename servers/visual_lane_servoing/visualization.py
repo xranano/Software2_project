@@ -18,8 +18,8 @@ def create_lane_visualization(
 
     # Red detected: show actual camera colours where red was detected, black elsewhere
     red_detected = np.zeros((h, w, 3), dtype=np.uint8)
-    # image is RGB — convert to BGR for display
-    bgr_src = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    # image is BGR from real-server control loop / virtual-server conversion
+    bgr_src = image if image.ndim == 3 else cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
     red_detected[rm_full > 0] = bgr_src[rm_full > 0]
     # Draw ROI boundary on the red-detected panel
     roi_line_y_full = int(h * 0.75)

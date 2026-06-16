@@ -15,6 +15,7 @@ from flask import Flask, Response, render_template_string, jsonify, request
 from tasks.visual_lane_servoing.packages.agent import LaneServoingAgent
 from tasks.object_detection.packages.agent import ObjectDetectionAgent, CLASS_NAMES
 from tasks.object_detection.packages.stop_activity import should_stop as student_should_stop
+from tasks.object_detection.packages.robot_detector import BlueRobotDetector
 from servers.object_detection.visualization import draw_detections
 from servers.templates.object_detection import OBJECT_DETECTION_TEMPLATE as HTML_TEMPLATE
 
@@ -29,6 +30,7 @@ from servers.common import make_frame_generator, shutdown_cleanup, suppress_http
 app        = Flask(__name__)
 lane_agent = None
 det_agent  = None
+robot_detector = None
 camera     = None
 wheels     = None
 running    = False
@@ -40,6 +42,7 @@ _last_detections = []
 _detection_lock  = threading.Lock()
 _stopped_by_det  = False
 _stop_reason     = ''
+_robot_blue_px   = 0
 
 keys_pressed     = {'up': False, 'down': False, 'left': False, 'right': False}
 _keys_lock       = threading.Lock()
@@ -106,7 +109,7 @@ def _should_stop(detections):
 
 
 def visualize(frame_rgb):
-    global _stopped_by_det, _stop_reason
+    global _stopped_by_det, _stop_reason, _robot_blue_px
 
     bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
 
@@ -131,6 +134,18 @@ def visualize(frame_rgb):
         pwm_left, pwm_right = lane_agent.compute_commands(frame_rgb)
 
         should_stop_flag, reason = _should_stop(detections)
+
+        if robot_detector is not None:
+            robot_ahead, _robot_blue_px = robot_detector.detect(bgr)
+            if robot_ahead and not should_stop_flag:
+                should_stop_flag = True
+                reason = "robot ahead (blue px={})".format(_robot_blue_px)
+            if lane_agent.frame_count % 30 == 0:
+                print("[Robot] enabled={} blue_area={} threshold={} -> {}".format(
+                    robot_detector.enabled, _robot_blue_px,
+                    robot_detector.area_threshold,
+                    "STOP" if robot_ahead else "clear"))
+
         _stopped_by_det = should_stop_flag
         _stop_reason    = reason
 
@@ -147,7 +162,29 @@ def visualize(frame_rgb):
                   for (x1, y1, x2, y2), s, c in detections]
         draw_detections(bgr, scaled)
 
+    _draw_robot_overlay(bgr)
+
     return bgr
+
+
+def _draw_robot_overlay(frame_bgr):
+    """Draw the blue-detection ROI and the single largest blue blob for tuning."""
+    if robot_detector is None:
+        return
+    x0, y0, x1, y1 = robot_detector.last_roi
+    cv2.rectangle(frame_bgr, (x0, y0), (x1, y1), (160, 160, 160), 1)
+    triggered = _stopped_by_det and 'robot' in _stop_reason
+    color = (0, 0, 255) if triggered else (255, 200, 0)
+    if robot_detector.last_bbox is not None:
+        bx1, by1, bx2, by2 = robot_detector.last_bbox
+        cv2.rectangle(frame_bgr, (bx1, by1), (bx2, by2), color, 2)
+    cv2.putText(
+        frame_bgr,
+        "robot blue area: {} / {}".format(robot_detector.last_blue_pixels,
+                                          robot_detector.area_threshold),
+        (10, frame_bgr.shape[0] - 10),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2, cv2.LINE_AA,
+    )
 
 
 generate_frames = make_frame_generator(lambda: camera, visualize, quality=50)
@@ -243,6 +280,15 @@ def set_threshold():
         det_agent.conf_threshold = float(value)
     return jsonify({'conf_threshold': det_agent.conf_threshold if det_agent else None})
 
+@app.route('/set_robot_threshold', methods=['POST'])
+def set_robot_threshold():
+    value = request.json.get('value') if request.json else None
+    if robot_detector and value is not None:
+        robot_detector.area_threshold = int(value)
+    return jsonify({
+        'robot_blue_area_threshold': robot_detector.area_threshold if robot_detector else None
+    })
+
 @app.route('/status')
 def status():
     with _detection_lock:
@@ -257,6 +303,7 @@ def status():
         'trt_building':         getattr(det_agent, 'trt_building', False) if det_agent else False,
         'stopped_by_detection': _stopped_by_det,
         'stop_reason':          _stop_reason,
+        'robot_blue_pixels':    _robot_blue_px,
         'conf_threshold':       det_agent.conf_threshold if det_agent else 0.5,
         'detections': [
             {'class': CLASS_NAMES.get(c, str(c)), 'score': round(s, 3), 'bbox': list(b)}
@@ -266,7 +313,7 @@ def status():
 
 
 def main():
-    global lane_agent, det_agent, camera, wheels
+    global lane_agent, det_agent, robot_detector, camera, wheels
 
     import argparse
     ap = argparse.ArgumentParser()
@@ -284,6 +331,9 @@ def main():
     print('\n[1/4] Creating lane agent...')
     lane_agent = LaneServoingAgent()
     print(f'  p_gain={lane_agent.p_gain}, d_gain={lane_agent.d_gain}, speed={lane_agent.base_speed}')
+    robot_detector = BlueRobotDetector()
+    print(f'  robot (blue) detector: enabled={robot_detector.enabled}, '
+          f'area_threshold={robot_detector.area_threshold}')
 
     print('\n[2/4] Loading detection model...')
     det_agent = ObjectDetectionAgent()

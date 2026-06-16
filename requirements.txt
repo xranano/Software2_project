@@ -3,6 +3,8 @@
 
 flask
 opencv-contrib-python<4.10
+dt-apriltags
+pupil-apriltags
 numpy>=1.24.0,<2
 pyyaml
 requests

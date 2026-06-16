@@ -77,6 +77,13 @@ class CameraDriverAbs(ABC):
                 return True, self._last_frame
             return False, None
 
+    def read_rgb(self) -> Tuple[bool, Optional[np.ndarray]]:
+        """Read frame as RGB (real camera read() returns BGR)."""
+        success, frame = self.read()
+        if success and frame is not None:
+            return True, cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        return False, None
+
     def read_jpeg(self) -> Tuple[bool, Optional[bytes]]:
         success, frame = self.read()
 

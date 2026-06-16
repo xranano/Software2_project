@@ -1,3 +1,24 @@
 img_size: 416
 conf_threshold: 0.7
 nms_threshold: 0.45
+
+# ── Robot detection (blue-blob heuristic, no extra model) ───────────────────────
+# A Duckiebot's blue chassis forms a solid blue blob. We track the LARGEST blue
+# blob and stop when it gets big enough (i.e. the robot is close/ahead).
+robot_detection_enabled: true
+# HSV thresholds (OpenCV ranges: H 0-179, S/V 0-255). Tune to your bot's blue.
+robot_blue_hsv_lower: [95, 110, 70]
+robot_blue_hsv_upper: [130, 255, 255]
+# Stop once the largest blue blob area (px) crosses this.
+# Lower = stops earlier/further away; raise if it stops at blue background.
+# A real robot up close is a big solid blob; noise specks are small.
+robot_blue_area_threshold: 6000
+# Temporal stability: hits needed to trigger, seconds to keep stopping after.
+robot_confirm_frames: 2
+robot_latch_seconds: 2.0
+# Region of interest as frame fractions. Full frame = detect across the whole
+# camera view. With a full ROI you'll want a larger area threshold above.
+robot_roi_top: 0.00
+robot_roi_bottom: 1.00
+robot_roi_left: 0.00
+robot_roi_right: 1.00

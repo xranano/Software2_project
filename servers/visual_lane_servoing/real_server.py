@@ -1,6 +1,7 @@
 import sys
 import os
 import threading
+import time
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.join(script_dir, '..', '..')
@@ -19,7 +20,7 @@ from duckiebot.wheel_driver.wheels_driver import DaguWheelsDriver
 from duckiebot.wheel_driver.wheels_driver_abs import WheelPWMConfiguration
 from duckiebot.camera_driver.camera_driver import CameraDriver
 from launcher.ports import find_available_port
-from servers.common import make_frame_generator, shutdown_cleanup, suppress_http_logs
+from servers.common import shutdown_cleanup, suppress_http_logs
 
 LANE_CONFIG_FILE    = os.path.join(project_root, 'config', 'lane_servoing_config.yaml')
 LANE_HSV_CONFIG_FILE = os.path.join(project_root, 'config', 'lane_servoing_hsv_config.yaml')
@@ -39,37 +40,60 @@ running    = False
 stop_event = threading.Event()
 
 _control_thread: threading.Thread = None
+_display_lock = threading.Lock()
+_latest_display_bgr = None
 
 
 def _control_loop():
-    """Fixed-rate control loop: one wheel command per camera frame."""
+    """Sole camera reader: control + build the frame the browser stream shows."""
+    global _latest_display_bgr
     while not stop_event.is_set():
         if camera is None or agent is None or wheels is None:
             stop_event.wait(0.05)
             continue
 
-        ok, frame = camera.read_rgb()
-        if not ok or frame is None:
+        ok, frame_bgr = camera.read()
+        if not ok or frame_bgr is None:
+            time.sleep(0.01)
             continue
 
+        frame = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         left, right = agent.compute_commands(frame)
         if running:
             wheels.set_wheels_speed(left, right)
         else:
             wheels.set_wheels_speed(0.0, 0.0)
 
-
-def visualize(frame):
-    """Display-only: uses results already computed by _control_loop."""
-    if agent is None or wheels is None:
-        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-
-    debug_info = agent.last_debug_info
-    bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-    return create_lane_visualization(bgr, debug_info, wheels.left_pwm, wheels.right_pwm)
+        display = create_lane_visualization(
+            frame_bgr, agent.last_debug_info, wheels.left_pwm, wheels.right_pwm,
+        )
+        with _display_lock:
+            _latest_display_bgr = display
 
 
-generate_frames = make_frame_generator(lambda: camera, visualize, quality=50)
+def _stream_frames():
+    """MJPEG generator — reads the latest rendered frame, never touches the camera."""
+    while True:
+        try:
+            with _display_lock:
+                display = _latest_display_bgr
+            if display is None:
+                time.sleep(0.05)
+                continue
+
+            ret, jpeg = cv2.imencode('.jpg', display, [cv2.IMWRITE_JPEG_QUALITY, 50])
+            if not ret:
+                time.sleep(0.01)
+                continue
+
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n'
+                   + jpeg.tobytes() + b'\r\n')
+            time.sleep(1.0 / 30.0)
+
+        except Exception as e:
+            print('[VideoStream] Error: {}'.format(e))
+            time.sleep(0.05)
 
 
 @app.route('/')
@@ -79,7 +103,7 @@ def index():
 
 @app.route('/video')
 def video():
-    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    return Response(_stream_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
 @app.route('/reset', methods=['POST'])
