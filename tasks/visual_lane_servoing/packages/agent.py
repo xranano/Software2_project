@@ -48,7 +48,7 @@ TAG_INSTRUCTIONS = {
 # behaviour. To restore normal sign logic later, set this back to False and
 # the original per-tag sets below (_PERMANENT_STOP_TAGS, _TIMED_STOP_TAGS,
 # etc.) take over again.
-_STOP_ON_ANY_SIGN     = True
+_STOP_ON_ANY_SIGN     = False   # set True to immediately stop on ANY tag (detection test)
 _ANY_SIGN_STOP_DURATION = 2.0
 
 _PERMANENT_STOP_TAGS  = {5, 7}          # PARKING, NO ENTRY
@@ -123,6 +123,44 @@ class LaneServoingAgent:
         self.yield_speed    = float(cfg.get('yield_speed',    0.13))
         self.yield_duration = float(cfg.get('yield_duration', 2.0))
 
+        # ── Red stop-line detection ───────────────────────────────────────
+        # A red band across the lane (between the yellow and white lines)
+        # marks an intersection stop line. Stop briefly when we reach it.
+        self._red_stop_enabled  = bool(cfg.get('red_stop_enabled', True))
+        self._red_stop_pixels   = int(cfg.get('red_stop_pixels', 1500))   # min red px in ROI to stop
+        self._red_stop_duration = float(cfg.get('red_stop_duration', 2.0))
+        self._red_stop_cooldown = float(cfg.get('red_stop_cooldown', 6.0))  # don't re-fire on same line
+        # STOP/PARK wait until the red band's centre is this far down the
+        # frame (1.0 = very bottom) so the bot stops AT the line, not early.
+        self._red_stop_bottom_frac = float(cfg.get('red_stop_bottom_frac', 0.85))
+        # ROI (frame fractions) where the stop line appears as we approach.
+        self._red_roi_top   = float(cfg.get('red_roi_top',   0.50))
+        self._red_roi_left  = float(cfg.get('red_roi_left',  0.15))
+        self._red_roi_right = float(cfg.get('red_roi_right', 0.85))
+        # HSV red ranges (OpenCV hue 0-179); red wraps, so two bands OR-ed.
+        self._red_lo1 = np.array(cfg.get('red_hsv_lower1', [0,   90,  80]),  dtype=np.uint8)
+        self._red_hi1 = np.array(cfg.get('red_hsv_upper1', [15,  255, 255]), dtype=np.uint8)
+        self._red_lo2 = np.array(cfg.get('red_hsv_lower2', [165, 90,  80]),  dtype=np.uint8)
+        self._red_hi2 = np.array(cfg.get('red_hsv_upper2', [179, 255, 255]), dtype=np.uint8)
+        self._red_stop_cooldown_end = 0.0
+
+        # ── Stop-sign "look both ways" head-check ─────────────────────────
+        self._stop_look_enabled = bool(cfg.get('stop_look_enabled', True))
+        self._stop_look_angle   = float(cfg.get('stop_look_angle_deg', 30.0))  # degrees each side
+        # Separate left/right spin speeds to compensate for unequal wheels;
+        # stop_look_speed is the shared fallback for both.
+        _look_speed = float(cfg.get('stop_look_speed', 0.15))
+        self._stop_look_speed_left  = float(cfg.get('stop_look_speed_left',  _look_speed))
+        self._stop_look_speed_right = float(cfg.get('stop_look_speed_right', _look_speed))
+        self._stop_look_rate    = float(cfg.get('stop_look_deg_per_sec', 60.0))  # est. yaw rate at that speed
+        self._stop_look_hold    = float(cfg.get('stop_look_hold', 0.3))        # pause at each look
+        # Lane re-centre after each look (closed-loop on yellow/white lines).
+        self._look_correct_speed   = float(cfg.get('stop_look_correct_speed', 0.15))
+        self._look_correct_tol     = float(cfg.get('stop_look_correct_tol', 0.08))   # normalised error deadband
+        self._look_correct_timeout = float(cfg.get('stop_look_correct_timeout', 1.5))
+        self._look_phase       = 'idle'
+        self._look_phase_start = 0.0
+
         # ── Left-turn FSM params ──────────────────────────────────────────
         self._left_straight_duration = cfg.get('left_straight_duration', 1.1)
         self._left_turn_max_duration = cfg.get('left_turn_max_duration',  2.5)
@@ -157,15 +195,12 @@ class LaneServoingAgent:
         self._right_turn_start        = 0.0
         self._right_turn_cooldown_end = 0.0
 
-        # Pending sign-decided turn ('none' | 'left' | 'right').
-        # Set the moment a turn sign (9/10/11) is seen — remembers which way
-        # to go at the upcoming intersection. The bot drives straight until
-        # the lane lines vanish (same signal as the line-loss auto-turn),
-        # then carries out this remembered direction. A minimum straight
-        # dwell still applies so we don't react to a momentary dropout right
-        # as the sign is first spotted.
-        self._pending_sign_turn        = 'none'
-        self._pending_sign_turn_start  = 0.0
+        # Pending sign action, remembered the moment a sign is seen and
+        # carried out only when we reach the next red stop line (the
+        # intersection). Nothing happens before then.
+        #   'none' | 'stop' | 'yield' | 'left' | 'right' | 'parked'
+        self._pending_sign_action = 'none'
+        self._pending_sign_name   = ''
 
         # Sign FSM  ('none' | 'stopped' | 'yielding' | 'parked')
         self._sign_state          = 'none'
@@ -189,22 +224,19 @@ class LaneServoingAgent:
 
     # ── Sign helpers ─────────────────────────────────────────────────────────
 
-    def _arm_sign_turn(self, direction, now):
-        """Remember a turn decision from a sign, to be carried out once the
-        lane lines vanish at the upcoming intersection (see compute_commands).
+    def _arm_sign_action(self, action, name, now):
+        """Remember a sign's action, to be carried out at the next red stop
+        line (the intersection). Nothing happens before then. First sign wins
+        until consumed; ignored while a turn is already running.
         """
-        already_pending = self._pending_sign_turn != 'none'
         turn_in_progress = (self._left_turn_state != 'none'
-                             or self._right_turn_state != 'none')
-        on_cooldown = (now < self._left_turn_cooldown_end
-                       or now < self._right_turn_cooldown_end)
-        if already_pending or turn_in_progress or on_cooldown:
+                            or self._right_turn_state != 'none')
+        if self._pending_sign_action != 'none' or turn_in_progress:
             return
-        self._pending_sign_turn       = direction
-        self._pending_sign_turn_start = now
-        self._yellow_visible_frames   = 0
-        print("[Sign] Remembering decision: turn {} at the next intersection.".format(
-            direction.upper()))
+        self._pending_sign_action = action
+        self._pending_sign_name   = name
+        print("[Sign] Remembering '{}' ({}) — will act at the next red line.".format(
+            name, action.upper()))
 
     def _on_sign_detected(self, tag_id, area, now):
         name = TAG_INSTRUCTIONS.get(tag_id, "TAG_{}".format(tag_id))
@@ -220,46 +252,39 @@ class LaneServoingAgent:
                 _ANY_SIGN_STOP_DURATION, tag_id, name))
             return
 
+        # All sign actions are deferred to the next red stop line.
         if tag_id in _PERMANENT_STOP_TAGS:
-            self._sign_state = 'parked'
-            print("[Sign] Permanently stopped ({}).".format(name))
+            self._arm_sign_action('parked', name, now)
             return
 
         if tag_id in _TIMED_STOP_TAGS:
-            duration = _TIMED_STOP_DURATIONS[tag_id]
-            self._sign_state          = 'stopped'
-            self._sign_state_start    = now
-            self._sign_state_duration = duration
-            print("[Sign] Stopping for {:.1f}s.".format(duration))
+            self._arm_sign_action('stop', name, now)
             return
 
         if tag_id in _YIELD_TAGS:
-            self._sign_state          = 'yielding'
-            self._sign_state_start    = now
-            self._sign_state_duration = self.yield_duration
-            print("[Sign] Yielding for {:.1f}s.".format(self.yield_duration))
+            self._arm_sign_action('yield', name, now)
             return
 
         if tag_id in _RANDOM_TURN_TAGS:
             choice = random.choice(['left', 'right'])
             print("[Sign] Tag {} allows either turn — randomly chose: {}".format(
                 tag_id, choice.upper()))
-            self._arm_sign_turn(choice, now)
+            self._arm_sign_action(choice, "{} -> {}".format(name, choice.upper()), now)
             return
 
         if tag_id in _LEFT_TURN_TAGS:
-            self._arm_sign_turn('left', now)
+            self._arm_sign_action('left', name, now)
             return
 
         if tag_id in _RIGHT_TURN_TAGS:
-            self._arm_sign_turn('right', now)
+            self._arm_sign_action('right', name, now)
             return
 
         if tag_id in _STRAIGHT_TAGS:
-            self._left_turn_state  = 'none'
-            self._right_turn_state = 'none'
-            self._pending_sign_turn = 'none'
-            print("[Sign] Straight-only: turn FSMs suppressed.")
+            self._left_turn_state   = 'none'
+            self._right_turn_state  = 'none'
+            self._pending_sign_action = 'none'
+            print("[Sign] Straight-only: cleared pending action.")
 
     def _check_sign_behavior(self, now):
         for tag in self.apriltag_detections:
@@ -271,6 +296,100 @@ class LaneServoingAgent:
                 continue
             self._sign_cooldowns[tag_id] = now + self.apriltag_cooldown
             self._on_sign_detected(tag_id, area, now)
+
+    def _recenter_cmd(self, yellow_xs, white_xs, left_det, right_det, w, elapsed):
+        """Rotate in place to re-centre the lane in view, using the yellow/
+        white markings. Returns (done, left, right). 'done' when the lane is
+        centred (|error| <= tol), no lane is seen, or the correction times out.
+        """
+        if elapsed >= self._look_correct_timeout:
+            return True, 0.0, 0.0
+        if not (left_det or right_det):
+            return True, 0.0, 0.0  # nothing to align to — give up this leg
+        error = self._calculate_error(yellow_xs, white_xs, left_det, right_det, w)
+        if abs(error) <= self._look_correct_tol:
+            return True, 0.0, 0.0
+        c = self._look_correct_speed
+        if error > 0:          # lane is left of centre → rotate left (CCW)
+            return False, -c, c
+        return False, c, -c    # lane is right of centre → rotate right (CW)
+
+    def _stop_look_step(self, now, yellow_xs, white_xs, left_det, right_det, w):
+        """FSM for the stop head-check: settle → look RIGHT → re-centre on the
+        lane → look LEFT → re-centre → done. The look legs are open-loop timed;
+        the re-centre legs are closed-loop on the lane markings, so the bot
+        realigns itself between/after looks regardless of wheel mismatch.
+        Returns (left, right) while busy, or None when finished (and resumes).
+        """
+        phase   = self._look_phase
+        elapsed = now - self._look_phase_start
+        seg     = self._stop_look_angle / max(1e-3, self._stop_look_rate)
+        hold    = self._stop_look_hold
+        sL, sR  = self._stop_look_speed_left, self._stop_look_speed_right
+
+        def advance(p):
+            self._look_phase = p
+            self._look_phase_start = now
+
+        if phase == 'settle':
+            if elapsed >= hold:
+                advance('look_right')
+            return 0.0, 0.0
+        if phase == 'look_right':
+            if elapsed >= seg:
+                advance('correct_right')
+            return sR, -sR
+        if phase == 'correct_right':
+            done, l, r = self._recenter_cmd(yellow_xs, white_xs, left_det, right_det, w, elapsed)
+            if done:
+                advance('look_left')
+            return l, r
+        if phase == 'look_left':
+            if elapsed >= seg:
+                advance('correct_left')
+            return -sL, sL
+        if phase == 'correct_left':
+            done, l, r = self._recenter_cmd(yellow_xs, white_xs, left_det, right_det, w, elapsed)
+            if done:
+                advance('done')
+            return l, r
+        # phase == 'done'
+        self._look_phase = 'idle'
+        self._sign_state = 'none'
+        self._smooth_left = self._smooth_right = 0.0
+        print("[Sign] Look both ways + lane re-centre complete — resuming.")
+        return None
+
+    def _detect_red_line(self, bgr):
+        """Find the red stop-line band in the lower-centre ROI. Returns
+        (red_pixel_count, full_frame_mask, y_fraction), where y_fraction is the
+        red band's vertical centre as a fraction of frame height (1.0 = very
+        bottom; 0.0 if no red). Red wraps the HSV hue circle, so two ranges
+        are OR-ed together.
+        """
+        h, w = bgr.shape[:2]
+        y0 = max(0, min(h, int(h * self._red_roi_top)))
+        x0 = max(0, min(w, int(w * self._red_roi_left)))
+        x1 = max(0, min(w, int(w * self._red_roi_right)))
+        full = np.zeros((h, w), dtype=np.uint8)
+        if y0 >= h or x0 >= x1:
+            return 0, full, 0.0
+        roi = bgr[y0:h, x0:x1]
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        mask = cv2.bitwise_or(
+            cv2.inRange(hsv, self._red_lo1, self._red_hi1),
+            cv2.inRange(hsv, self._red_lo2, self._red_hi2),
+        )
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)
+        full[y0:h, x0:x1] = mask
+        red_px = int(np.count_nonzero(mask))
+        if red_px > 0:
+            rows = np.nonzero(mask)[0]                 # rows within the ROI
+            y_frac = (y0 + float(np.mean(rows))) / float(h)
+        else:
+            y_frac = 0.0
+        return red_px, full, y_frac
 
     # ── PD helpers ───────────────────────────────────────────────────────────
 
@@ -377,14 +496,8 @@ class LaneServoingAgent:
             self._filtered_steering = 0.0
             return 0.0, 0.0
 
-        # ── Sign FSM: timed stop ──────────────────────────────────────────
-        if self._sign_state == 'stopped':
-            if now - self._sign_state_start < self._sign_state_duration:
-                self._smooth_left = self._smooth_right = 0.0
-                self._filtered_steering = 0.0
-                return 0.0, 0.0
-            print("[Sign] Stop complete — resuming.")
-            self._sign_state = 'none'
+        # NOTE: the timed-stop / look-both-ways handler now runs AFTER lane
+        # detection (below), so it can re-centre on the yellow/white lines.
 
         # ── Lane detection ────────────────────────────────────────────────
         try:
@@ -432,8 +545,98 @@ class LaneServoingAgent:
             'apriltags':         list(self.apriltag_detections),
             'apriltag_error':    self.apriltag_error,
             'sign_state':        self._sign_state,
-            'pending_sign_turn': self._pending_sign_turn,
+            'pending_sign_action': self._pending_sign_action,
         }
+
+        # ── Sign FSM: timed stop (STOP sign → look both ways + re-centre) ─
+        if self._sign_state == 'stopped':
+            if self._stop_look_enabled:
+                if self._look_phase == 'idle':
+                    self._look_phase = 'settle'
+                    self._look_phase_start = now
+                cmd = self._stop_look_step(now, yellow_xs, white_xs,
+                                           left_det, right_det, w)
+                if cmd is not None:
+                    self._filtered_steering = 0.0
+                    self._smooth_left, self._smooth_right = cmd
+                    return cmd
+                # look + re-centre finished → fall through and resume driving
+            else:
+                if now - self._sign_state_start < self._sign_state_duration:
+                    self._smooth_left = self._smooth_right = 0.0
+                    self._filtered_steering = 0.0
+                    return 0.0, 0.0
+                print("[Sign] Stop complete — resuming.")
+                self._sign_state = 'none'
+
+        # ── Red stop-line: the action point for a remembered sign ─────────
+        if self._red_stop_enabled:
+            red_px, red_mask, red_y = self._detect_red_line(bgr)
+            red_line = red_px >= self._red_stop_pixels
+            self.last_debug_info['red_mask'] = red_mask
+            self.last_debug_info['red_px']   = red_px
+            self.last_debug_info['red_line'] = red_line
+            self.last_debug_info['red_y']    = red_y
+
+            can_act = (red_line
+                       and now >= self._red_stop_cooldown_end
+                       and self._left_turn_state == 'none'
+                       and self._right_turn_state == 'none')
+            if can_act:
+                action = self._pending_sign_action
+                # A stop/park must happen AT the line: keep approaching until
+                # the red band reaches the bottom of the frame. Yield/turn/none
+                # act as soon as the line is seen.
+                waiting_for_bottom = (action in ('stop', 'parked')
+                                      and red_y < self._red_stop_bottom_frac)
+
+                if not waiting_for_bottom:
+                    self._red_stop_cooldown_end = now + self._red_stop_cooldown
+                    name = self._pending_sign_name or "stop line"
+                    self._pending_sign_action = 'none'
+                    self._pending_sign_name   = ''
+
+                    if action == 'parked':
+                        self._sign_state = 'parked'
+                        self._smooth_left = self._smooth_right = 0.0
+                        self._filtered_steering = 0.0
+                        print("[RedLine] At line (y={:.2f}) — PARK ({}).".format(red_y, name))
+                        return 0.0, 0.0
+
+                    if action == 'stop':
+                        self._sign_state          = 'stopped'
+                        self._sign_state_start    = now
+                        self._sign_state_duration = self._red_stop_duration
+                        self._smooth_left = self._smooth_right = 0.0
+                        self._filtered_steering = 0.0
+                        print("[RedLine] At line (y={:.2f}) — STOP ({}) for {:.1f}s.".format(
+                            red_y, name, self._red_stop_duration))
+                        return 0.0, 0.0
+
+                    if action == 'yield':
+                        # Don't stop — slow to yield speed, then carry on.
+                        self._sign_state          = 'yielding'
+                        self._sign_state_start    = now
+                        self._sign_state_duration = self.yield_duration
+                        print("[RedLine] Reached red line — YIELD: slowing {:.1f}s.".format(
+                            self.yield_duration))
+                        # fall through: normal PD runs with yield scaling below
+
+                    elif action == 'left':
+                        self._left_turn_state = 'straight'
+                        self._left_turn_start = now
+                        print("[RedLine] Reached red line — turning LEFT.")
+                        # fall through to left-turn FSM
+
+                    elif action == 'right':
+                        self._right_turn_state = 'straight'
+                        self._right_turn_start = now
+                        print("[RedLine] Reached red line — turning RIGHT.")
+                        # fall through to right-turn FSM
+
+                    else:  # 'none' — no sign remembered: a red line alone is
+                        # NOT a stop. Drive straight through the intersection.
+                        print("[RedLine] Reached red line — no sign, continuing straight.")
 
         # ── Sign FSM: yield ───────────────────────────────────────────────
         yielding = False
@@ -444,44 +647,14 @@ class LaneServoingAgent:
                 print("[Sign] Yield complete — resuming normal speed.")
                 self._sign_state = 'none'
 
-        # ── Yellow-end tracker → arms turns at intersections ───────────────
-        _YELLOW_MIN_FRAMES   = 8
-        _PENDING_MIN_DWELL_S = 0.3  # ignore line dropout for this long after sign seen
-
+        # ── Intersection turns are now triggered at the red stop line ─────
+        # (see the red stop-line block above). The old "auto-turn when the
+        # yellow line vanishes" behaviour is intentionally disabled: the bot
+        # only acts on a remembered sign, and only at the red line. With no
+        # turn sign, it just drives straight through the intersection.
         if yellow_slice_count > 0:
             self._yellow_visible_frames = min(self._yellow_visible_frames + 1, 999)
         else:
-            lines_gone_long_enough = self._yellow_visible_frames >= _YELLOW_MIN_FRAMES
-
-            if self._pending_sign_turn != 'none':
-                # A sign (9/10/11) already told us which way to go. Wait for
-                # the lines to actually vanish — i.e. we've reached the
-                # intersection — before committing to that remembered turn.
-                dwell_ok = (now - self._pending_sign_turn_start) >= _PENDING_MIN_DWELL_S
-                if (lines_gone_long_enough and dwell_ok
-                        and self._left_turn_state == 'none'
-                        and self._right_turn_state == 'none'):
-                    direction = self._pending_sign_turn
-                    self._pending_sign_turn = 'none'
-                    if direction == 'left':
-                        self._left_turn_state = 'straight'
-                        self._left_turn_start = now
-                        print("[Agent] Lines gone — carrying out remembered LEFT turn")
-                    else:
-                        self._right_turn_state = 'straight'
-                        self._right_turn_start = now
-                        print("[Agent] Lines gone — carrying out remembered RIGHT turn")
-            else:
-                # No sign decision pending — fall back to the unrelated
-                # default behaviour (always turn left when lines vanish).
-                if (lines_gone_long_enough
-                        and self._left_turn_state == 'none'
-                        and self._right_turn_state == 'none'
-                        and now >= self._left_turn_cooldown_end):
-                    self._left_turn_state = 'straight'
-                    self._left_turn_start = now
-                    print("[Agent] Yellow gone — left turn: driving straight")
-
             self._yellow_visible_frames = 0
 
         # ── Left-turn FSM ─────────────────────────────────────────────────
@@ -602,12 +775,15 @@ class LaneServoingAgent:
         self._right_turn_state        = 'none'
         self._right_turn_start        = 0.0
         self._right_turn_cooldown_end = 0.0
-        self._pending_sign_turn        = 'none'
-        self._pending_sign_turn_start  = 0.0
+        self._pending_sign_action      = 'none'
+        self._pending_sign_name        = ''
         self._sign_state             = 'none'
         self._sign_state_start       = 0.0
         self._sign_state_duration    = 0.0
         self._sign_cooldowns         = {}
+        self._red_stop_cooldown_end  = 0.0
+        self._look_phase             = 'idle'
+        self._look_phase_start       = 0.0
         self.apriltag_detections     = []
         self.apriltag_error          = None
         self._last_apriltag_ids      = ()
@@ -632,5 +808,5 @@ class LaneServoingAgent:
             'apriltags':         [],
             'apriltag_error':    None,
             'sign_state':        'none',
-            'pending_sign_turn': 'none',
+            'pending_sign_action': 'none',
         }

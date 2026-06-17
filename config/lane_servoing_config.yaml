@@ -23,18 +23,56 @@ apriltag_act_area: 800.0
 apriltag_cooldown: 5.0
 # Yield sign: reduced speed and how long to hold it
 yield_speed: 0.13
-yield_duration: 2.0
+yield_duration: 5.5
 
-# ── Left-turn FSM (unchanged from original) ────────────────────────────────────
+# ── Red stop-line ──────────────────────────────────────────────────────────────
+red_stop_enabled: true
+# Min red pixels in the ROI before a red line is recognised.
+red_stop_pixels: 1500
+# How long to hold the stop (for a STOP sign) at the line.
+red_stop_duration: 2.0
+# Seconds before another red line can trigger (avoid re-firing on the same one).
+red_stop_cooldown: 6.0
+# Only STOP/PARK wait for this: stop once the red band's centre is at least this
+# far down the frame (1.0 = very bottom). Raise to stop closer to the line.
+red_stop_bottom_frac: 0.85
+# ROI as frame fractions (where to look for the line as you approach).
+red_roi_top: 0.50
+red_roi_left: 0.15
+red_roi_right: 0.85
+
+# ── Stop-sign "look both ways" head-check ───────────────────────────────────────
+stop_look_enabled: true
+# Degrees to look each side. Leg time is calculated as angle / deg_per_sec.
+stop_look_angle_deg: 60.0
+# In-place spin wheel magnitude (one wheel forward, one back).
+# Split per direction to compensate for unequal wheels — tune speed_left and
+# speed_right so the left and right looks reach the same angle. stop_look_speed
+# is the shared fallback if a side isn't set.
+stop_look_speed: 0.30
+stop_look_speed_left: 0.30
+stop_look_speed_right: 0.30
+# Estimated yaw rate at stop_look_speed — tune so the look reaches ~30°.
+stop_look_deg_per_sec: 40.0
+# Pause (s) at centre / each look extreme.
+stop_look_hold: 0.3
+# After each look, re-centre on the yellow/white lane lines (closed-loop):
+stop_look_correct_speed: 0.15     # in-place rotate speed while correcting
+stop_look_correct_tol: 0.08       # |lane error| deadband to call it centred
+stop_look_correct_timeout: 1.5    # give up correcting after this many seconds
+
+# ── Left-turn FSM ──────────────────────────────────────────────────────────────
+# Sharper turn = bigger gap between outer and inner wheel. Inner can go negative
+# (that wheel reverses) for a tight pivot.
 left_straight_duration: 1.1
 left_straight_speed: 0.23
 left_turn_max_duration: 2.5
-left_turn_wheel_inner: 0.07
-left_turn_wheel_outer: 0.26
+left_turn_wheel_inner: -0.05
+left_turn_wheel_outer: 0.30
 
-# ── Right-turn FSM (new) ───────────────────────────────────────────────────────
+# ── Right-turn FSM ─────────────────────────────────────────────────────────────
 right_straight_duration: 0.6
 right_straight_speed: 0.23
 right_turn_max_duration: 2.0
-right_turn_wheel_inner: 0.26
-right_turn_wheel_outer: 0.07
+right_turn_wheel_inner: 0.30
+right_turn_wheel_outer: -0.05
