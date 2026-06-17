@@ -1,6 +1,7 @@
 # agent.py
 import os
 import time
+import random
 import yaml
 import numpy as np
 import cv2
@@ -33,17 +34,31 @@ TAG_INSTRUCTIONS = {
     6:  "PEDESTRIAN CROSSING",
     7:  "NO ENTRY",
     8:  "TURN LEFT OR RIGHT",
-    9:  "TURN LEFT OR FORWARD",
-    10: "TURN RIGHT OR FORWARD",
+    9:  "TURN RIGHT OR FORWARD",
+    10: "TURN LEFT OR FORWARD",
+    11: "TURN LEFT OR RIGHT",
+    20: "STOP",
+    24: "STOP",
+    39: "YIELD",
 }
 
+# ── DETECTION-TEST MODE ──────────────────────────────────────────────────
+# Every tag triggers the same fixed timed stop, regardless of its meaning.
+# This is for validating AprilTag/object-detection quality, not real sign
+# behaviour. To restore normal sign logic later, set this back to False and
+# the original per-tag sets below (_PERMANENT_STOP_TAGS, _TIMED_STOP_TAGS,
+# etc.) take over again.
+_STOP_ON_ANY_SIGN     = True
+_ANY_SIGN_STOP_DURATION = 2.0
+
 _PERMANENT_STOP_TAGS  = {5, 7}          # PARKING, NO ENTRY
-_TIMED_STOP_TAGS      = {0, 6}          # STOP, PEDESTRIAN CROSSING
-_TIMED_STOP_DURATIONS = {0: 2.0, 6: 3.0}
-_YIELD_TAGS           = {1}
-_LEFT_TURN_TAGS       = {2, 8, 9}
-_RIGHT_TURN_TAGS      = {3, 10}
-_STRAIGHT_TAGS        = {4}
+_TIMED_STOP_TAGS      = {20, 24}        # STOP only (0/6 no longer trigger a stop)
+_TIMED_STOP_DURATIONS = {20: 2.0, 24: 2.0}
+_YIELD_TAGS           = {39}            # YIELD only (tag 1 no longer triggers yield)
+_LEFT_TURN_TAGS       = {10}            # TURN LEFT OR FORWARD
+_RIGHT_TURN_TAGS      = {9}             # TURN RIGHT OR FORWARD
+_RANDOM_TURN_TAGS     = {11}            # TURN LEFT OR RIGHT — choose randomly at the intersection
+_STRAIGHT_TAGS        = set()           # nothing suppresses an in-progress turn anymore
 
 
 def detect_lines_in_slices(
@@ -142,6 +157,16 @@ class LaneServoingAgent:
         self._right_turn_start        = 0.0
         self._right_turn_cooldown_end = 0.0
 
+        # Pending sign-decided turn ('none' | 'left' | 'right').
+        # Set the moment a turn sign (9/10/11) is seen — remembers which way
+        # to go at the upcoming intersection. The bot drives straight until
+        # the lane lines vanish (same signal as the line-loss auto-turn),
+        # then carries out this remembered direction. A minimum straight
+        # dwell still applies so we don't react to a momentary dropout right
+        # as the sign is first spotted.
+        self._pending_sign_turn        = 'none'
+        self._pending_sign_turn_start  = 0.0
+
         # Sign FSM  ('none' | 'stopped' | 'yielding' | 'parked')
         self._sign_state          = 'none'
         self._sign_state_start    = 0.0
@@ -164,16 +189,77 @@ class LaneServoingAgent:
 
     # ── Sign helpers ─────────────────────────────────────────────────────────
 
+    def _arm_sign_turn(self, direction, now):
+        """Remember a turn decision from a sign, to be carried out once the
+        lane lines vanish at the upcoming intersection (see compute_commands).
+        """
+        already_pending = self._pending_sign_turn != 'none'
+        turn_in_progress = (self._left_turn_state != 'none'
+                             or self._right_turn_state != 'none')
+        on_cooldown = (now < self._left_turn_cooldown_end
+                       or now < self._right_turn_cooldown_end)
+        if already_pending or turn_in_progress or on_cooldown:
+            return
+        self._pending_sign_turn       = direction
+        self._pending_sign_turn_start = now
+        self._yellow_visible_frames   = 0
+        print("[Sign] Remembering decision: turn {} at the next intersection.".format(
+            direction.upper()))
+
     def _on_sign_detected(self, tag_id, area, now):
         name = TAG_INSTRUCTIONS.get(tag_id, "TAG_{}".format(tag_id))
         print("\n" + "=" * 60)
-        print("[Sign] Detected: {} (tag {}, area {:.0f} px^2) — stopping 3s".format(name, tag_id, area))
+        print("[Sign] Acting on: {} (tag {}, area {:.0f} px^2)".format(name, tag_id, area))
         print("=" * 60 + "\n")
 
-        # Stop for 3 seconds for every sign, then resume lane following.
-        self._sign_state          = 'stopped'
-        self._sign_state_start    = now
-        self._sign_state_duration = 3.0
+        if _STOP_ON_ANY_SIGN:
+            self._sign_state          = 'stopped'
+            self._sign_state_start    = now
+            self._sign_state_duration = _ANY_SIGN_STOP_DURATION
+            print("[Sign] DETECTION-TEST MODE: stopping for {:.1f}s on tag {} ({}).".format(
+                _ANY_SIGN_STOP_DURATION, tag_id, name))
+            return
+
+        if tag_id in _PERMANENT_STOP_TAGS:
+            self._sign_state = 'parked'
+            print("[Sign] Permanently stopped ({}).".format(name))
+            return
+
+        if tag_id in _TIMED_STOP_TAGS:
+            duration = _TIMED_STOP_DURATIONS[tag_id]
+            self._sign_state          = 'stopped'
+            self._sign_state_start    = now
+            self._sign_state_duration = duration
+            print("[Sign] Stopping for {:.1f}s.".format(duration))
+            return
+
+        if tag_id in _YIELD_TAGS:
+            self._sign_state          = 'yielding'
+            self._sign_state_start    = now
+            self._sign_state_duration = self.yield_duration
+            print("[Sign] Yielding for {:.1f}s.".format(self.yield_duration))
+            return
+
+        if tag_id in _RANDOM_TURN_TAGS:
+            choice = random.choice(['left', 'right'])
+            print("[Sign] Tag {} allows either turn — randomly chose: {}".format(
+                tag_id, choice.upper()))
+            self._arm_sign_turn(choice, now)
+            return
+
+        if tag_id in _LEFT_TURN_TAGS:
+            self._arm_sign_turn('left', now)
+            return
+
+        if tag_id in _RIGHT_TURN_TAGS:
+            self._arm_sign_turn('right', now)
+            return
+
+        if tag_id in _STRAIGHT_TAGS:
+            self._left_turn_state  = 'none'
+            self._right_turn_state = 'none'
+            self._pending_sign_turn = 'none'
+            print("[Sign] Straight-only: turn FSMs suppressed.")
 
     def _check_sign_behavior(self, now):
         for tag in self.apriltag_detections:
@@ -346,6 +432,7 @@ class LaneServoingAgent:
             'apriltags':         list(self.apriltag_detections),
             'apriltag_error':    self.apriltag_error,
             'sign_state':        self._sign_state,
+            'pending_sign_turn': self._pending_sign_turn,
         }
 
         # ── Sign FSM: yield ───────────────────────────────────────────────
@@ -357,18 +444,44 @@ class LaneServoingAgent:
                 print("[Sign] Yield complete — resuming normal speed.")
                 self._sign_state = 'none'
 
-        # ── Yellow-end tracker → auto left turn at intersections ──────────
-        _YELLOW_MIN_FRAMES = 8
+        # ── Yellow-end tracker → arms turns at intersections ───────────────
+        _YELLOW_MIN_FRAMES   = 8
+        _PENDING_MIN_DWELL_S = 0.3  # ignore line dropout for this long after sign seen
+
         if yellow_slice_count > 0:
             self._yellow_visible_frames = min(self._yellow_visible_frames + 1, 999)
         else:
-            if (self._yellow_visible_frames >= _YELLOW_MIN_FRAMES
-                    and self._left_turn_state == 'none'
-                    and self._right_turn_state == 'none'
-                    and now >= self._left_turn_cooldown_end):
-                self._left_turn_state = 'straight'
-                self._left_turn_start = now
-                print("[Agent] Yellow gone — left turn: driving straight")
+            lines_gone_long_enough = self._yellow_visible_frames >= _YELLOW_MIN_FRAMES
+
+            if self._pending_sign_turn != 'none':
+                # A sign (9/10/11) already told us which way to go. Wait for
+                # the lines to actually vanish — i.e. we've reached the
+                # intersection — before committing to that remembered turn.
+                dwell_ok = (now - self._pending_sign_turn_start) >= _PENDING_MIN_DWELL_S
+                if (lines_gone_long_enough and dwell_ok
+                        and self._left_turn_state == 'none'
+                        and self._right_turn_state == 'none'):
+                    direction = self._pending_sign_turn
+                    self._pending_sign_turn = 'none'
+                    if direction == 'left':
+                        self._left_turn_state = 'straight'
+                        self._left_turn_start = now
+                        print("[Agent] Lines gone — carrying out remembered LEFT turn")
+                    else:
+                        self._right_turn_state = 'straight'
+                        self._right_turn_start = now
+                        print("[Agent] Lines gone — carrying out remembered RIGHT turn")
+            else:
+                # No sign decision pending — fall back to the unrelated
+                # default behaviour (always turn left when lines vanish).
+                if (lines_gone_long_enough
+                        and self._left_turn_state == 'none'
+                        and self._right_turn_state == 'none'
+                        and now >= self._left_turn_cooldown_end):
+                    self._left_turn_state = 'straight'
+                    self._left_turn_start = now
+                    print("[Agent] Yellow gone — left turn: driving straight")
+
             self._yellow_visible_frames = 0
 
         # ── Left-turn FSM ─────────────────────────────────────────────────
@@ -489,6 +602,8 @@ class LaneServoingAgent:
         self._right_turn_state        = 'none'
         self._right_turn_start        = 0.0
         self._right_turn_cooldown_end = 0.0
+        self._pending_sign_turn        = 'none'
+        self._pending_sign_turn_start  = 0.0
         self._sign_state             = 'none'
         self._sign_state_start       = 0.0
         self._sign_state_duration    = 0.0
@@ -517,4 +632,5 @@ class LaneServoingAgent:
             'apriltags':         [],
             'apriltag_error':    None,
             'sign_state':        'none',
+            'pending_sign_turn': 'none',
         }
