@@ -26,6 +26,11 @@ from duckiebot.wheel_driver.wheels_driver_abs import WheelPWMConfiguration
 from launcher.ports import find_available_port
 from servers.common import make_frame_generator, shutdown_cleanup, suppress_http_logs
 
+SIGN_ACTIVE_STATES = frozenset({
+    "SLOWING", "STOPPED", "CHECKPATH", "POST_STOP",
+    "APPROACHING", "INTERSECT", "PRE_TURN", "TURNING", "EXITING",
+})
+
 
 app        = Flask(__name__)
 lane_agent = None
@@ -125,20 +130,26 @@ def visualize(frame_bgr):
         _stopped_by_det = False
         _stop_reason    = ''
     elif lane_agent is not None:
-        pwm_left, pwm_right = lane_agent.compute_commands(frame_rgb)
+        pwm_left, pwm_right = lane_agent.compute_commands(frame_rgb, detections=detections)
 
-        should_stop, reason = _should_stop(detections, det_agent.img_size if det_agent else frame_bgr.shape[0])
+        sign_state = getattr(lane_agent, "sign_state", "MOVING")
+        sign_active = sign_state in SIGN_ACTIVE_STATES
+        frame_h = det_agent.img_size if det_agent else frame_bgr.shape[0]
+        if sign_active:
+            should_stop, reason = False, ""
+        else:
+            should_stop, reason = _should_stop(detections, frame_h)
 
-        if robot_detector is not None:
-            robot_ahead, _robot_blue_px = robot_detector.detect(frame_bgr)
-            if robot_ahead and not should_stop:
-                should_stop = True
-                reason = "robot ahead (blue px={})".format(_robot_blue_px)
-            if lane_agent.frame_count % 30 == 0:
-                print("[Robot] enabled={} blue_area={} threshold={} -> {}".format(
-                    robot_detector.enabled, _robot_blue_px,
-                    robot_detector.area_threshold,
-                    "STOP" if robot_ahead else "clear"))
+            if robot_detector is not None:
+                robot_ahead, _robot_blue_px = robot_detector.detect(frame_bgr)
+                if robot_ahead and not should_stop:
+                    should_stop = True
+                    reason = "robot ahead (blue px={})".format(_robot_blue_px)
+                if lane_agent.frame_count % 30 == 0:
+                    print("[Robot] enabled={} blue_area={} threshold={} -> {}".format(
+                        robot_detector.enabled, _robot_blue_px,
+                        robot_detector.area_threshold,
+                        "STOP" if robot_ahead else "clear"))
 
         _stopped_by_det = should_stop
         _stop_reason    = reason

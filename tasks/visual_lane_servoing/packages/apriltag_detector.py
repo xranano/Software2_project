@@ -1,11 +1,12 @@
-"""AprilTag 36h11 detection for Duckietown traffic signs."""
-# apriltag_detector.py
-# Compatible with Python 3.6+  (no __future__ annotations, no lowercase generics)
+"""AprilTag 36h11 detection wrapper (OpenCV aruco + raw fallback)."""
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 import cv2
 import numpy as np
+
+from tasks.visual_lane_servoing.packages import april_tag
+from tasks.visual_lane_servoing.packages.sign_behavior_config import SignBehaviorConfig
 
 
 @dataclass(frozen=True)
@@ -24,166 +25,48 @@ class AprilTagDetection:
         }
 
 
-class AprilTagDetector:
-    """Detect all tag36h11 tags and return the largest detections first."""
-
-    def __init__(self, min_area: float = 50.0):
+class _DetectContext:
+    def __init__(self, min_area: float, swap_10_11: bool = True):
+        cfg = SignBehaviorConfig()
+        cfg.tag_10_11_swap = swap_10_11
+        self.config = cfg
         self.min_area = float(min_area)
-        self.backend = None  # type: str
-        self._tag_detector = None
 
-        if self._try_init_opencv():
-            self.backend = "opencv"
-        elif self._try_init_dt_apriltags():
-            self.backend = "dt_apriltags"
-        elif self._try_init_pupil():
-            self.backend = "pupil"
-        else:
-            raise RuntimeError(
-                "AprilTag detection unavailable. On the robot, install dt-apriltags "
-                "(pip install dt-apriltags). On sim/laptop use opencv-contrib-python."
-            )
 
-        print("[AprilTag] Detector ready (backend={})".format(self.backend))
+class AprilTagDetector:
+    """Detect tag36h11 markers; largest detections first."""
 
-    def _try_init_opencv(self):
-        if not hasattr(cv2, "aruco"):
-            return False
-        try:
-            dictionary = cv2.aruco.getPredefinedDictionary(
-                cv2.aruco.DICT_APRILTAG_36h11
-            )
-        except (AttributeError, cv2.error):
-            return False
+    def __init__(self, min_area: float = 50.0, swap_10_11: bool = True):
+        self.min_area = float(min_area)
+        self._ctx = _DetectContext(min_area, swap_10_11)
+        backend = "opencv-aruco" if hasattr(cv2, "aruco") else "raw-fallback"
+        print("[AprilTag] Detector ready (backend={})".format(backend))
 
-        parameters = cv2.aruco.DetectorParameters()
-        if hasattr(cv2.aruco, "ArucoDetector"):
-            detector = cv2.aruco.ArucoDetector(dictionary, parameters)
-            self._detect_markers = detector.detectMarkers
-        else:
-            def _detect(gray):
-                return cv2.aruco.detectMarkers(
-                    gray, dictionary, parameters=parameters
-                )
-            self._detect_markers = _detect
-        return True
-
-    def _try_pip_install(self, package):
-        import subprocess
-        import sys
-        try:
-            print("[AprilTag] Trying: pip install {} --user".format(package))
-            result = subprocess.run(
-                [sys.executable, "-m", "pip", "install", package, "--user", "-q"],
-                timeout=180,
-            )
-            return result.returncode == 0
-        except Exception as exc:
-            print("[AprilTag] pip install failed: {}".format(exc))
-            return False
-
-    def _try_init_dt_apriltags(self):
-        """Duckietown ships dt-apriltags on many DB21 bots."""
-        try:
-            from dt_apriltags import Detector
-        except ImportError:
-            if not self._try_pip_install("dt-apriltags"):
-                return False
-            try:
-                from dt_apriltags import Detector
-            except ImportError:
-                return False
-
-        try:
-            self._tag_detector = Detector(
-                families="tag36h11",
-                nthreads=1,
-                quad_decimate=1.0,
-                quad_sigma=0.0,
-                refine_edges=1,
-                decode_sharpening=0.25,
-                debug=0,
-            )
-        except TypeError:
-            self._tag_detector = Detector(
-                families="tag36h11",
-                nthreads=1,
-                quad_decimate=1.0,
-                quad_sigma=0.0,
-                refine_edges=True,
-                decode_sharpening=0.25,
-                debug=0,
-            )
-        return True
-
-    def _try_init_pupil(self):
-        try:
-            from pupil_apriltags import Detector
-        except ImportError:
-            return False
-
-        self._tag_detector = Detector(
-            families="tag36h11",
-            nthreads=1,
-            quad_decimate=1.0,
-            quad_sigma=0.0,
-            refine_edges=True,
-            decode_sharpening=0.25,
-            debug=0,
-        )
-        return True
-
-    def _to_gray(self, frame_bgr):
-        if frame_bgr is None or frame_bgr.size == 0:
+    def _to_rgb(self, frame):
+        if frame is None or frame.size == 0:
             return None
-        if frame_bgr.ndim == 2:
-            return frame_bgr
-        return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-
-    def _from_corners(self, points, tag_id):
-        # type: (np.ndarray, int) -> AprilTagDetection
-        area = float(abs(cv2.contourArea(points)))
-        if area < self.min_area:
-            return None
-        center = tuple(float(v) for v in np.mean(points, axis=0))
-        return AprilTagDetection(
-            tag_id=int(tag_id),
-            corners=tuple((float(x), float(y)) for x, y in points),
-            center=center,
-            area=area,
-        )
-
-    def _detect_opencv(self, gray):
-        corners, ids, _ = self._detect_markers(gray)
-        if ids is None or len(corners) == 0:
-            return []
-
-        detections = []  # type: List[AprilTagDetection]
-        for marker_corners, tag_id in zip(corners, ids.flatten()):
-            points = marker_corners.reshape(4, 2).astype(np.float32)
-            det = self._from_corners(points, tag_id)
-            if det is not None:
-                detections.append(det)
-        return detections
-
-    def _detect_native(self, gray):
-        detections = []  # type: List[AprilTagDetection]
-        for tag in self._tag_detector.detect(gray):
-            points = np.asarray(tag.corners, dtype=np.float32).reshape(4, 2)
-            det = self._from_corners(points, tag.tag_id)
-            if det is not None:
-                detections.append(det)
-        return detections
+        if frame.ndim == 2:
+            return cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     def detect(self, frame_bgr: np.ndarray) -> List[AprilTagDetection]:
-        gray = self._to_gray(frame_bgr)
-        if gray is None:
+        rgb = self._to_rgb(frame_bgr)
+        if rgb is None:
             return []
 
-        if self.backend == "opencv":
-            detections = self._detect_opencv(gray)
-        else:
-            detections = self._detect_native(gray)
-
+        raw = april_tag.detect_tags(self._ctx, rgb)
+        detections = []
+        for tag in raw:
+            pts = np.asarray(tag["corners"], dtype=np.float32).reshape(4, 2)
+            area = float(abs(cv2.contourArea(pts)))
+            if area < self.min_area:
+                continue
+            center = tuple(float(v) for v in np.mean(pts, axis=0))
+            detections.append(AprilTagDetection(
+                tag_id=int(tag["tag_id"]),
+                corners=tuple((float(x), float(y)) for x, y in pts),
+                center=center,
+                area=area,
+            ))
         detections.sort(key=lambda d: d.area, reverse=True)
         return detections

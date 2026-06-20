@@ -4,34 +4,58 @@ from unittest.mock import patch
 import numpy as np
 
 from tasks.visual_lane_servoing.packages.agent import LaneServoingAgent
-from tasks.visual_lane_servoing.packages.apriltag_detector import AprilTagDetection
-
-
-class _FakeAprilTagDetector:
-    def __init__(self, *args, **kwargs):
-        pass
-
-    def detect(self, _frame_bgr):
-        return [AprilTagDetection(
-            tag_id=21,
-            corners=((10.0, 10.0), (30.0, 10.0), (30.0, 30.0), (10.0, 30.0)),
-            center=(20.0, 20.0),
-            area=400.0,
-        )]
+from tasks.visual_lane_servoing.packages.sign_behavior_config import TagID
 
 
 class TestAgentAprilTag(unittest.TestCase):
-    @patch("tasks.visual_lane_servoing.packages.agent.AprilTagDetector", _FakeAprilTagDetector)
-    def test_stop_detection_is_published_to_debug_info(self):
+    def test_lane_follows_without_tags_or_red_line(self):
         agent = LaneServoingAgent()
-        agent.apriltag_interval = 1
+        with patch(
+            "tasks.visual_lane_servoing.packages.sign_behavior.april_tag.detect_tags",
+            return_value=[],
+        ), patch(
+            "tasks.visual_lane_servoing.packages.sign_behavior.red_line_detection.detect_red_line",
+            return_value=(False, np.zeros((48, 64), dtype=np.uint8)),
+        ):
+            left, right = agent.compute_commands(np.zeros((48, 64, 3), dtype=np.uint8))
 
-        left, right = agent.compute_commands(np.zeros((48, 64, 3), dtype=np.uint8))
-
-        self.assertEqual((left, right), (0.0, 0.0))
+        self.assertEqual(agent.sign_state, "MOVING")
+        self.assertFalse(agent.sign_debug.get("red_line", True))
+        self.assertIsNone(agent.sign_debug.get("saved_tag"))
         self.assertEqual(agent.last_debug_info["frame_count"], 1)
-        self.assertEqual(agent.last_debug_info["apriltags"][0]["id"], 21)
-        self.assertIsNone(agent.last_debug_info["apriltag_error"])
+
+    def test_tag_alone_does_not_stop_robot(self):
+        agent = LaneServoingAgent()
+        agent._sign_fsm.config.tag_confirm_frames = 1
+
+        tag = {"tag_id": 26, "corners": np.zeros((4, 2), dtype=np.float32)}
+        with patch(
+            "tasks.visual_lane_servoing.packages.sign_behavior.april_tag.detect_tags",
+            return_value=[tag],
+        ), patch(
+            "tasks.visual_lane_servoing.packages.sign_behavior.red_line_detection.detect_red_line",
+            return_value=(False, np.zeros((48, 64), dtype=np.uint8)),
+        ):
+            left, right = agent.compute_commands(np.zeros((48, 64, 3), dtype=np.uint8))
+
+        self.assertEqual(agent.sign_state, "MOVING")
+        self.assertEqual(agent.sign_debug.get("saved_tag"), TagID.STOP.name)
+        self.assertNotIn(agent.sign_state, ("SLOWING", "STOPPED", "CHECKPATH"))
+
+    def test_red_line_alone_does_not_stop_robot(self):
+        agent = LaneServoingAgent()
+        with patch(
+            "tasks.visual_lane_servoing.packages.sign_behavior.april_tag.detect_tags",
+            return_value=[],
+        ), patch(
+            "tasks.visual_lane_servoing.packages.sign_behavior.red_line_detection.detect_red_line",
+            return_value=(True, np.ones((48, 64), dtype=np.uint8)),
+        ):
+            left, right = agent.compute_commands(np.zeros((48, 64, 3), dtype=np.uint8))
+
+        self.assertEqual(agent.sign_state, "MOVING")
+        self.assertTrue(agent.sign_debug.get("red_line"))
+        self.assertIsNone(agent.sign_debug.get("saved_tag"))
 
 
 if __name__ == "__main__":

@@ -11,68 +11,85 @@ p_gain: 0.5
 smooth_alpha: 0.6
 steer_smooth: 0.6
 turn_speed_ratio: 0.0
-apriltag_enabled: true
-apriltag_interval: 3
-apriltag_min_area: 50.0
 
-# ── New: sign behavior ─────────────────────────────────────────────────────────
-# Tag area (px²) must exceed this before a behavior fires.
-# Raise if bot reacts too early to distant signs; lower if it misses them.
+# ── Sign behavior (AprilTag + red-line FSM) ───────────────────────────────────
+tag_confirm_frames: 2
+saved_sign_timeout_sec: 4.0
+tag_10_11_swap: true
+
+red_strip_frac: 0.32
+red_roi_left: 0.12
+red_roi_right: 0.9
+red_line_close_y2_ratio: 0.3
+red_pixel_frac: 0.012
+red_min_area: 60
+red_min_width_frac: 0.12
+red_ignore_after_frames: 100
+default_forward_on_red_without_tag: false
+
+stop_hold_frames: 18
+slow_ramp_factor: 0.8
+stopped_speed_threshold: 0.055
+
+approach_duration: 3.0
+approach_speed: 0.1
+
+check_left_frames: 8
+check_right_frames: 6
+check_turn_speed: 0.22
+
+post_stop_frames: 12
+post_stop_speed: 0.28
+
+preturn_left_frames: 3
+preturn_right_frames: 6
+preturn_speed: 0.12
+
+intersect_forward_frames: 40
+intersect_left_frames: 55
+intersect_right_frames: 40
+turn_left_inner: -0.05
+turn_left_outer: 0.30
+turn_right_inner: 0.30
+turn_right_outer: -0.05
+forward_turn_speed: 0.23
+
+exit_speed: 0.40
+exit_timeout_frames: 3
+
+# ── Legacy keys (ignored by sign FSM; kept for compatibility) ─────────────────
+apriltag_enabled: true
+apriltag_interval: 1
+apriltag_min_area: 50.0
 apriltag_act_area: 800.0
-# Seconds before the same tag ID can trigger again.
 apriltag_cooldown: 5.0
-# Yield sign: reduced speed and how long to hold it
 yield_speed: 0.13
 yield_duration: 5.5
-
-# ── Red stop-line ──────────────────────────────────────────────────────────────
 red_stop_enabled: true
-# Min red pixels in the ROI before a red line is recognised.
 red_stop_pixels: 1500
-# How long to hold the stop (for a STOP sign) at the line.
 red_stop_duration: 2.0
-# Seconds before another red line can trigger (avoid re-firing on the same one).
 red_stop_cooldown: 6.0
-# Only STOP/PARK wait for this: stop once the red band's centre is at least this
-# far down the frame (1.0 = very bottom). Raise to stop closer to the line.
 red_stop_bottom_frac: 0.85
-# ROI as frame fractions (where to look for the line as you approach).
 red_roi_top: 0.50
-red_roi_left: 0.15
-red_roi_right: 0.85
-
-# ── Stop-sign "look both ways" head-check ───────────────────────────────────────
 stop_look_enabled: true
-# Degrees to look each side. Leg time is calculated as angle / deg_per_sec.
 stop_look_angle_deg: 60.0
-# In-place spin wheel magnitude (one wheel forward, one back).
-# Split per direction to compensate for unequal wheels — tune speed_left and
-# speed_right so the left and right looks reach the same angle. stop_look_speed
-# is the shared fallback if a side isn't set.
 stop_look_speed: 0.30
 stop_look_speed_left: 0.30
 stop_look_speed_right: 0.30
-# Estimated yaw rate at stop_look_speed — tune so the look reaches ~30°.
 stop_look_deg_per_sec: 40.0
-# Pause (s) at centre / each look extreme.
 stop_look_hold: 0.3
-# After each look, re-centre on the yellow/white lane lines (closed-loop):
-stop_look_correct_speed: 0.15     # in-place rotate speed while correcting
-stop_look_correct_tol: 0.08       # |lane error| deadband to call it centred
-stop_look_correct_timeout: 1.5    # give up correcting after this many seconds
-
-# ── Left-turn FSM ──────────────────────────────────────────────────────────────
-# Sharper turn = bigger gap between outer and inner wheel. Inner can go negative
-# (that wheel reverses) for a tight pivot.
+stop_look_correct_speed: 0.15
+stop_look_correct_tol: 0.08
+stop_look_correct_timeout: 1.5
 left_straight_duration: 1.1
 left_straight_speed: 0.23
 left_turn_max_duration: 2.5
 left_turn_wheel_inner: -0.05
 left_turn_wheel_outer: 0.30
-
-# ── Right-turn FSM ─────────────────────────────────────────────────────────────
+left_turn_min_duration: 0.8
 right_straight_duration: 0.6
 right_straight_speed: 0.23
 right_turn_max_duration: 2.0
 right_turn_wheel_inner: 0.30
 right_turn_wheel_outer: -0.05
+right_turn_min_duration: 0.8

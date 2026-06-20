@@ -26,6 +26,11 @@ from launcher.ports import find_available_port
 from launcher.config import GODOT_SCENES
 from servers.common import make_frame_generator, shutdown_cleanup, suppress_http_logs
 
+SIGN_ACTIVE_STATES = frozenset({
+    "SLOWING", "STOPPED", "CHECKPATH", "POST_STOP",
+    "APPROACHING", "INTERSECT", "PRE_TURN", "TURNING", "EXITING",
+})
+
 
 app        = Flask(__name__)
 lane_agent = None
@@ -131,20 +136,25 @@ def visualize(frame_rgb):
         _stopped_by_det = False
         _stop_reason    = ''
     elif lane_agent is not None:
-        pwm_left, pwm_right = lane_agent.compute_commands(frame_rgb)
+        pwm_left, pwm_right = lane_agent.compute_commands(frame_rgb, detections=detections)
 
-        should_stop_flag, reason = _should_stop(detections)
+        sign_state = getattr(lane_agent, "sign_state", "MOVING")
+        sign_active = sign_state in SIGN_ACTIVE_STATES
+        if sign_active:
+            should_stop_flag, reason = False, ""
+        else:
+            should_stop_flag, reason = _should_stop(detections)
 
-        if robot_detector is not None:
-            robot_ahead, _robot_blue_px = robot_detector.detect(bgr)
-            if robot_ahead and not should_stop_flag:
-                should_stop_flag = True
-                reason = "robot ahead (blue px={})".format(_robot_blue_px)
-            if lane_agent.frame_count % 30 == 0:
-                print("[Robot] enabled={} blue_area={} threshold={} -> {}".format(
-                    robot_detector.enabled, _robot_blue_px,
-                    robot_detector.area_threshold,
-                    "STOP" if robot_ahead else "clear"))
+            if robot_detector is not None:
+                robot_ahead, _robot_blue_px = robot_detector.detect(bgr)
+                if robot_ahead and not should_stop_flag:
+                    should_stop_flag = True
+                    reason = "robot ahead (blue px={})".format(_robot_blue_px)
+                if lane_agent.frame_count % 30 == 0:
+                    print("[Robot] enabled={} blue_area={} threshold={} -> {}".format(
+                        robot_detector.enabled, _robot_blue_px,
+                        robot_detector.area_threshold,
+                        "STOP" if robot_ahead else "clear"))
 
         _stopped_by_det = should_stop_flag
         _stop_reason    = reason
