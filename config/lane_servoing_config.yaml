@@ -14,7 +14,7 @@ turn_speed_ratio: 0.0
 
 # ── Sign behavior (AprilTag + red-line FSM) ───────────────────────────────────
 tag_confirm_frames: 2
-saved_sign_timeout_sec: 4.0
+saved_sign_timeout_sec: 8.0
 tag_10_11_swap: true
 
 red_strip_frac: 0.32
@@ -40,6 +40,9 @@ check_turn_speed: 0.22
 
 post_stop_frames: 12
 post_stop_speed: 0.28
+
+yield_speed: 0.13
+yield_duration: 5.5
 
 preturn_left_frames: 3
 preturn_right_frames: 6

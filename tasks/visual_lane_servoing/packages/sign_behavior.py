@@ -24,7 +24,7 @@ class SignBehaviorFSM:
 
     STATES = (
         "MOVING", "APPROACHING", "SLOWING", "STOPPED", "CHECKPATH",
-        "POST_STOP", "INTERSECT", "PRE_TURN", "TURNING", "EXITING",
+        "POST_STOP", "YIELDING", "INTERSECT", "PRE_TURN", "TURNING", "EXITING",
     )
 
     def __init__(self, config: Optional[SignBehaviorConfig] = None):
@@ -124,9 +124,11 @@ class SignBehaviorFSM:
             return
         if self._saved_tag is None or sign_priority(tag) >= sign_priority(self._saved_tag):
             if self._saved_tag != tag:
-                print("[Sign] Saved {} ({}) — waiting for red line.".format(
+                print("[Sign] Saved {} ({}) — keep driving until red line.".format(
                     TAG_NAMES.get(tag, tag.name), tag.name))
             self._saved_tag = tag
+            self._saved_tag_time = now
+        elif tag == self._saved_tag:
             self._saved_tag_time = now
 
     def _expire_saved_sign(self, now: float) -> None:
@@ -153,8 +155,14 @@ class SignBehaviorFSM:
             self._enter_state("APPROACHING", now)
             return
 
-        if saved == TagID.YIELD or saved == TagID.STOP:
-            print("[Sign] {} at red line — slowing.".format(TAG_NAMES.get(saved, saved.name)))
+        if saved == TagID.YIELD:
+            print("[Sign] YIELD at red line — slowing to {:.2f} for {:.1f}s.".format(
+                self.config.yield_speed, self.config.yield_duration))
+            self._enter_state("YIELDING", now)
+            return
+
+        if saved == TagID.STOP:
+            print("[Sign] STOP at red line — stopping.")
             self._enter_state("SLOWING", now)
 
     def _turn_pwm(self, direction: str) -> Tuple[float, float]:
@@ -275,6 +283,15 @@ class SignBehaviorFSM:
         if self.state == "POST_STOP":
             left = right = cfg.post_stop_speed
             if self._state_frame >= cfg.post_stop_frames:
+                self._finish_exit(now)
+
+        if self.state == "YIELDING":
+            peak = max(abs(base_left), abs(base_right), 1e-6)
+            scale = min(1.0, cfg.yield_speed / peak)
+            left = base_left * scale
+            right = base_right * scale
+            if now - self._state_start >= cfg.yield_duration:
+                print("[Sign] Yield complete — resuming normal speed.")
                 self._finish_exit(now)
 
         if self.state == "APPROACHING":

@@ -27,7 +27,7 @@ from launcher.ports import find_available_port
 from servers.common import make_frame_generator, shutdown_cleanup, suppress_http_logs
 
 SIGN_ACTIVE_STATES = frozenset({
-    "SLOWING", "STOPPED", "CHECKPATH", "POST_STOP",
+    "SLOWING", "STOPPED", "CHECKPATH", "POST_STOP", "YIELDING",
     "APPROACHING", "INTERSECT", "PRE_TURN", "TURNING", "EXITING",
 })
 

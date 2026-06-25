@@ -249,6 +249,7 @@ class LaneServoingAgent:
             'apriltag_error':      self.apriltag_error,
             'sign_state':          sign_debug.get('state', 'MOVING'),
             'pending_sign_action': sign_debug.get('saved_tag'),
+            'pending_sign_name':   sign_debug.get('saved_tag'),
             'confirmed_tags':      sign_debug.get('confirmed_tags', []),
             'saved_tag':           sign_debug.get('saved_tag'),
             'chosen_turn':         sign_debug.get('chosen_turn'),

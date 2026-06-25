@@ -66,7 +66,7 @@ def is_stop_or_yield(tag: TagID) -> bool:
 @dataclass
 class SignBehaviorConfig:
     tag_confirm_frames: int = 2
-    saved_sign_timeout_sec: float = 4.0
+    saved_sign_timeout_sec: float = 8.0
     tag_10_11_swap: bool = True
 
     red_strip_frac: float = 0.32
@@ -94,6 +94,9 @@ class SignBehaviorConfig:
 
     post_stop_frames: int = 12
     post_stop_speed: float = 0.28
+
+    yield_speed: float = 0.13
+    yield_duration: float = 5.5
 
     preturn_left_frames: int = 3
     preturn_right_frames: int = 6

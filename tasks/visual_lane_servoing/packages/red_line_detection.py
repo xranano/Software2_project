@@ -74,4 +74,8 @@ def detect_red_line(
             continue
         return True, full_mask
 
+    # Approaching a remembered sign: enough red in the strip is enough to trigger.
+    if getattr(fsm_context, "_saved_tag", None) is not None:
+        return True, full_mask
+
     return False, full_mask
