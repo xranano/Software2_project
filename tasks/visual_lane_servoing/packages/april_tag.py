@@ -140,7 +140,7 @@ def detect_tags(fsm_context, frame_rgb: np.ndarray) -> List[dict]:
     if not tags:
         tags = _detect_fallback(gray)
 
-    swap = getattr(getattr(fsm_context, "config", None), "tag_10_11_swap", True)
+    swap = getattr(getattr(fsm_context, "config", None), "tag_10_11_swap", False)
     for tag in tags:
         tag["tag_id"] = _swap_tag_10_11(int(tag["tag_id"]), swap)
     return tags

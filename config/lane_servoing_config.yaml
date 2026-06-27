@@ -1,5 +1,5 @@
 # ── Original working values (do not change these) ─────────────────────────────
-base_speed: 0.23
+base_speed: 0.21
 curve_feedforward: 0.12
 curve_threshold: 350
 d_gain: 0.58
@@ -15,15 +15,15 @@ turn_speed_ratio: 0.0
 # ── Sign behavior (AprilTag + red-line FSM) ───────────────────────────────────
 tag_confirm_frames: 2
 saved_sign_timeout_sec: 8.0
-tag_10_11_swap: true
+tag_10_11_swap: false
 
 red_strip_frac: 0.32
 red_roi_left: 0.12
 red_roi_right: 0.9
 red_line_close_y2_ratio: 0.3
-red_pixel_frac: 0.012
-red_min_area: 60
-red_min_width_frac: 0.12
+red_pixel_frac: 0.006
+red_min_area: 30
+red_min_width_frac: 0.08
 red_ignore_after_frames: 100
 default_forward_on_red_without_tag: false
 

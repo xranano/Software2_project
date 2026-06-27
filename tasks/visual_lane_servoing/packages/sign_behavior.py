@@ -150,6 +150,17 @@ class SignBehaviorFSM:
         if is_intersection(saved):
             options = TAG_TURNS[saved]
             self._chosen_turn = random.choice(options)
+            
+            # ENFORCE: Tag 10 cannot turn right
+            if saved == TagID.TURN_LEFT_FWD and self._chosen_turn == "right":
+                self._chosen_turn = "forward"
+                print("[Sign] OVERRIDE: Tag 10 cannot go right, forcing FORWARD")
+            
+            # ENFORCE: Tag 11 cannot go forward
+            if saved == TagID.TURN_LEFT_RIGHT and self._chosen_turn == "forward":
+                self._chosen_turn = "left"
+                print("[Sign] OVERRIDE: Tag 11 cannot go forward, forcing LEFT")
+            
             print("[Sign] Intersection {} — chose {}.".format(
                 TAG_NAMES.get(saved, saved.name), self._chosen_turn.upper()))
             self._enter_state("APPROACHING", now)
@@ -296,11 +307,18 @@ class SignBehaviorFSM:
 
         if self.state == "APPROACHING":
             left = right = cfg.approach_speed
-            if now - self._state_start >= cfg.approach_duration:
+            # Wait until red line disappears before turning
+            if not red_line:
+                print(f"[Sign] Red line cleared — entering intersection")
+                self._enter_state("INTERSECT", now)
+            elif now - self._state_start >= cfg.approach_duration + 5.0:
+                # Safety timeout in case red line never disappears
+                print(f"[Sign] Approach timeout — forcing intersection entry")
                 self._enter_state("INTERSECT", now)
 
         if self.state == "INTERSECT":
             turn = self._chosen_turn or "forward"
+            print(f"[Sign] INTERSECT — chosen turn: {turn}")
             if turn in ("left", "right"):
                 self._enter_state("PRE_TURN", now)
             else:
@@ -312,12 +330,16 @@ class SignBehaviorFSM:
             budget = (cfg.preturn_left_frames if turn == "left"
                       else cfg.preturn_right_frames)
             if self._state_frame >= budget:
+                print(f"[Sign] PRE_TURN complete — starting {turn.upper()} turn")
                 self._enter_state("TURNING", now)
 
         if self.state == "TURNING":
             turn = self._chosen_turn or "forward"
             left, right = self._turn_pwm(turn)
+            if self._state_frame == 0:
+                print(f"[Sign] TURNING {turn.upper()}: L={left:.2f}, R={right:.2f}")
             if self._state_frame >= self._turn_frame_budget(turn):
+                print(f"[Sign] Turn complete after {self._state_frame} frames")
                 self._enter_state("EXITING", now)
 
         if self.state == "EXITING":

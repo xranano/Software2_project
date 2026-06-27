@@ -18,17 +18,17 @@ _YIELD_RAW_ID = 39
 _INTERSECTION_RAW_IDS = {9, 10, 11}
 
 TAG_TURNS: Dict[TagID, List[str]] = {
-    TagID.TURN_RIGHT_FWD: ["forward", "right"],
-    TagID.TURN_LEFT_FWD: ["left", "right"],
-    TagID.TURN_LEFT_RIGHT: ["forward", "left"],
+    TagID.TURN_RIGHT_FWD: ["forward", "right"],      # Tag 9: forward or right
+    TagID.TURN_LEFT_FWD: ["forward", "left"],        # Tag 10: forward or left
+    TagID.TURN_LEFT_RIGHT: ["right", "left"],        # Tag 11: right or left
 }
 
 TAG_NAMES = {
     TagID.STOP: "STOP",
     TagID.YIELD: "YIELD",
-    TagID.TURN_RIGHT_FWD: "TURN RIGHT OR FORWARD",
-    TagID.TURN_LEFT_FWD: "TURN LEFT OR FORWARD",
-    TagID.TURN_LEFT_RIGHT: "TURN LEFT OR RIGHT",
+    TagID.TURN_RIGHT_FWD: "TURN FORWARD OR RIGHT",
+    TagID.TURN_LEFT_FWD: "TURN FORWARD OR LEFT",
+    TagID.TURN_LEFT_RIGHT: "TURN RIGHT OR LEFT",
 }
 
 # Intersection signs outrank stop/yield when multiple tags are confirmed.
@@ -67,7 +67,7 @@ def is_stop_or_yield(tag: TagID) -> bool:
 class SignBehaviorConfig:
     tag_confirm_frames: int = 2
     saved_sign_timeout_sec: float = 8.0
-    tag_10_11_swap: bool = True
+    tag_10_11_swap: bool = False
 
     red_strip_frac: float = 0.32
     red_roi_left: float = 0.12
