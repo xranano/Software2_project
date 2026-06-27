@@ -32,7 +32,7 @@ slow_ramp_factor: 0.8
 stopped_speed_threshold: 0.055
 
 approach_duration: 3.0
-approach_speed: 0.1
+approach_speed: 0.15
 
 check_left_frames: 8
 check_right_frames: 6
@@ -41,12 +41,10 @@ check_turn_speed: 0.22
 post_stop_frames: 12
 post_stop_speed: 0.28
 
-yield_speed: 0.13
-yield_duration: 5.5
 
 preturn_left_frames: 3
 preturn_right_frames: 6
-preturn_speed: 0.12
+preturn_speed: 0.15
 
 intersect_forward_frames: 40
 intersect_left_frames: 55
@@ -66,7 +64,7 @@ apriltag_interval: 1
 apriltag_min_area: 50.0
 apriltag_act_area: 800.0
 apriltag_cooldown: 5.0
-yield_speed: 0.13
+yield_speed: 0.15
 yield_duration: 5.5
 red_stop_enabled: true
 red_stop_pixels: 1500

@@ -191,9 +191,9 @@ _EXTRA_JS = '''
         });
     }
 
-    let _currentScene = 'object_detection';
+    let _currentScene = 'project';
     function switchScene() {
-        const target = _currentScene === 'object_detection' ? 'introduction' : 'object_detection';
+        const target = _currentScene === 'project' ? 'introduction' : 'project';
         postJSON('/switch_scene', {scene: target}).then(data => {
             if (data && data.scene) {
                 _currentScene = data.scene;
@@ -348,6 +348,14 @@ _EXTRA_JS = '''
 
 OBJECT_DETECTION_TEMPLATE = render_template(
     'Object Detection',
+    '{{ hostname }} — Drive & Detect',
+    _CONTENT,
+    extra_css=_EXTRA_CSS,
+    extra_js=_EXTRA_JS,
+)
+
+PROJECT_TEMPLATE = render_template(
+    'Project',
     '{{ hostname }} — Drive & Detect',
     _CONTENT,
     extra_css=_EXTRA_CSS,

@@ -325,9 +325,8 @@ def _bot_host(target):
 # dependencies must be shipped alongside the task being deployed, otherwise the
 # bot runs whatever (possibly stale) copy already exists in its tree.
 TASK_DEPENDENCIES = {
-    'object_detection': ['visual_lane_servoing', 'sign_detection'],
-    'visual_lane_servoing': ['sign_detection'],
     'project': ['object_detection', 'visual_lane_servoing', 'sign_detection'],
+    'visual_lane_servoing': ['sign_detection'],
 }
 
 
@@ -360,10 +359,25 @@ def package_task(task_name):
             else:
                 print(f"   Warning: dependency packages not found: {dep_packages_dir}")
 
+            dep_models_dir = os.path.join(PROJECT_ROOT, 'tasks', dep_task, 'models')
+            if os.path.exists(dep_models_dir):
+                print(f"   Adding dependency models: tasks/{dep_task}/models/")
+                tar.add(dep_models_dir, arcname=f'tasks/{dep_task}/models', filter=no_pycache)
+
+            dep_server_dir = os.path.join(PROJECT_ROOT, 'servers', dep_task)
+            if os.path.exists(dep_server_dir):
+                print(f"   Adding dependency server: servers/{dep_task}/")
+                tar.add(dep_server_dir, arcname=f'servers/{dep_task}', filter=no_pycache)
+
         task_server_dir = os.path.join(PROJECT_ROOT, 'servers', task_name)
         if os.path.exists(task_server_dir):
             print(f"   Adding server: servers/{task_name}/")
             tar.add(task_server_dir, arcname=f'servers/{task_name}', filter=no_pycache)
+
+        templates_dir = os.path.join(PROJECT_ROOT, 'servers', 'templates')
+        if os.path.exists(templates_dir):
+            print(f"   Adding templates: servers/templates/")
+            tar.add(templates_dir, arcname='servers/templates', filter=no_pycache)
 
         if os.path.exists(config_dir):
             print(f"   Adding configs: config/")
