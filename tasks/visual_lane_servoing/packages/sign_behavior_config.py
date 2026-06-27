@@ -68,6 +68,7 @@ class SignBehaviorConfig:
     tag_confirm_frames: int = 2
     saved_sign_timeout_sec: float = 8.0
     tag_10_11_swap: bool = False
+    tag_min_area: float = 2000.0
 
     red_strip_frac: float = 0.32
     red_roi_left: float = 0.12

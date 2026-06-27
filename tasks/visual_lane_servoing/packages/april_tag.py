@@ -141,9 +141,24 @@ def detect_tags(fsm_context, frame_rgb: np.ndarray) -> List[dict]:
         tags = _detect_fallback(gray)
 
     swap = getattr(getattr(fsm_context, "config", None), "tag_10_11_swap", False)
+    min_tag_area = getattr(getattr(fsm_context, "config", None), "tag_min_area", 2000.0)
+    
+    filtered_tags = []
     for tag in tags:
         tag["tag_id"] = _swap_tag_10_11(int(tag["tag_id"]), swap)
-    return tags
+        
+        # Calculate bounding box area
+        corners = tag["corners"]
+        area = float(abs(cv2.contourArea(corners)))
+        tag["area"] = area
+        
+        # Filter by minimum area (only detect close/large tags)
+        if area >= min_tag_area:
+            filtered_tags.append(tag)
+        else:
+            print(f"[AprilTag] Ignored tag {tag['tag_id']} (too small: {area:.0f}px² < {min_tag_area:.0f}px²)")
+    
+    return filtered_tags
 
 
 def confirm_tags(fsm_context, raw_tags: List[dict]) -> List[int]:

@@ -16,6 +16,7 @@ turn_speed_ratio: 0.0
 tag_confirm_frames: 2
 saved_sign_timeout_sec: 8.0
 tag_10_11_swap: false
+tag_min_area: 2000.0
 
 red_strip_frac: 0.32
 red_roi_left: 0.12
