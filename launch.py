@@ -325,7 +325,9 @@ def _bot_host(target):
 # dependencies must be shipped alongside the task being deployed, otherwise the
 # bot runs whatever (possibly stale) copy already exists in its tree.
 TASK_DEPENDENCIES = {
-    'object_detection': ['visual_lane_servoing'],
+    'object_detection': ['visual_lane_servoing', 'sign_detection'],
+    'visual_lane_servoing': ['sign_detection'],
+    'project': ['object_detection', 'visual_lane_servoing', 'sign_detection'],
 }
 
 

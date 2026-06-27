@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 
 from tasks.visual_lane_servoing.packages import visual_servoing_activity as student
 from tasks.visual_lane_servoing.packages.cuvrve_behavior import detect_curve
-from tasks.visual_lane_servoing.packages.sign_behavior import SignBehaviorFSM
+from tasks.sign_detection.packages.sign_behavior import SignBehaviorFSM
 
 _CONFIG_FILE = os.path.normpath(os.path.join(
     os.path.dirname(__file__), '..', '..', '..', 'config', 'lane_servoing_config.yaml'
@@ -224,9 +224,13 @@ class LaneServoingAgent:
         if lane_debug is None:
             return 0.0, 0.0
 
-        final_left, final_right = self._sign_fsm.step(
+        sign_step = self._sign_fsm.step(
             image, base_left, base_right, detections,
         )
+        if isinstance(sign_step, tuple) and len(sign_step) >= 2:
+            final_left, final_right = sign_step[0], sign_step[1]
+        else:
+            final_left, final_right = base_left, base_right
 
         sign_debug = self._sign_fsm.debug
         red_mask = sign_debug.get('red_mask')

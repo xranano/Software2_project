@@ -51,7 +51,6 @@ _TAG_TURNS: Dict[TagID, List[str]] = {
 class State(IntEnum):
     MOVING = auto()
     APPROACHING = auto()
-    YIELDING = auto()
     SLOWING = auto()
     STOPPED = auto()
     CHECKPATH = auto()
@@ -70,9 +69,6 @@ class SignBehaviorConfig:
     """
 
     def __init__(self, **kwargs):
-        self.saved_sign_timeout_sec: float = kwargs.pop("saved_sign_timeout_sec", 8.0)
-        self.sign_ttl: float = kwargs.pop("sign_ttl", self.saved_sign_timeout_sec)
-
         # Red-line detection
         self.red_strip_frac: float = kwargs.pop("red_strip_frac", 0.32)
 
@@ -110,7 +106,6 @@ class SignBehaviorConfig:
             "approach_speed",
             0.1,
         )
-        self.turn_prep_duration: float = kwargs.pop("turn_prep_duration", 0.35)
 
         # Slow approach after seeing a sign but before red line.
         self.approach_speed_factor: float = kwargs.pop("approach_speed_factor", 0.75)

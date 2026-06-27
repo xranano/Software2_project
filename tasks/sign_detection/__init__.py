@@ -1,0 +1,1 @@
+"""Sign detection task package."""
