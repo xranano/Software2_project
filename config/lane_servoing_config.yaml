@@ -50,7 +50,7 @@ preturn_speed: 0.12
 
 intersect_forward_frames: 40
 intersect_left_frames: 55
-intersect_right_frames: 40
+intersect_right_frames: 35
 turn_left_inner: -0.05
 turn_left_outer: 0.30
 turn_right_inner: 0.30

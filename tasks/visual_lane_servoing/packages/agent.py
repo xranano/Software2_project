@@ -86,7 +86,7 @@ class LaneServoingAgent:
 
     # ── PD helpers ───────────────────────────────────────────────────────────
 
-    def _calculate_error(self, yellow_xs, white_xs, left_det, right_det, w):
+    def _calculate_error(self, yellow_xs, white_xs, left_det, right_det, w, is_curve=False):
         if left_det and right_det and yellow_xs and white_xs:
             y_mean = float(np.mean(yellow_xs))
             w_mean = float(np.mean(white_xs))
@@ -98,9 +98,9 @@ class LaneServoingAgent:
                 self._lane_half_width = 0.9 * self._lane_half_width + 0.1 * measured
             error = w / 2.0 - (y_mean + w_mean) / 2.0
         elif left_det and yellow_xs:
-            error = w / 2.0 - (float(np.mean(yellow_xs)) + self._lane_half_width)
+            error = w / 2.0 - (float(np.mean(yellow_xs)) + 50)
         elif right_det and white_xs:
-            error = w / 2.0 - (float(np.mean(white_xs)) - self._lane_half_width)
+            error = w / 2.0 - (float(np.mean(white_xs)) - 50)
         else:
             error = self._prev_error
         return float(np.clip(error / (w / 2.0), -1.0, 1.0))
@@ -182,7 +182,7 @@ class LaneServoingAgent:
         )
 
         raw_error            = self._calculate_error(yellow_xs, white_xs,
-                                                     left_det, right_det, w)
+                                                      left_det, right_det, w, is_curve)
         self._filtered_error = 0.7 * self._filtered_error + 0.3 * raw_error
         steering             = self._calculate_steering(self._filtered_error)
         if is_curve:

@@ -217,7 +217,8 @@ class SignBehaviorFSM:
                 self._saved_tag_time = None
 
                 if tag == TagID.STOP:
-                    self._set_state(State.SLOWING)
+                    self._queued_turn = "stop"
+                    self._set_state(State.APPROACHING)
                 elif tag == TagID.YIELD:
                     self._set_state(State.YIELDING)
                 elif tag in _TAG_TURNS:
@@ -275,7 +276,10 @@ class SignBehaviorFSM:
         elif self.state == State.APPROACHING:
             # no slowdown in approach: keep lane-follow output
             left, right = base_left, base_right
-            if self._elapsed_seconds() >= float(getattr(self.cfg, "approach_duration", 3.0)):
+            if self._queued_turn == "stop":
+                if self._elapsed_seconds() >= 1.8:
+                    self._set_state(State.SLOWING)
+            elif self._elapsed_seconds() >= float(getattr(self.cfg, "approach_duration", 3.0)):
                 self._set_state(State.INTERSECT)
 
         elif self.state == State.INTERSECT:
@@ -287,21 +291,26 @@ class SignBehaviorFSM:
                 self._set_state(State.TURNING)
 
         elif self.state == State.PRE_TURN:
-            s = float(getattr(self.cfg, "preturn_speed", 0.12))
-            left = right = s
-            budget = float(
-                getattr(self.cfg, "preturn_left_frames", 3)
-                if self._pick_turn() == "left"
-                else getattr(self.cfg, "preturn_right_frames", 6)
-            )
-            if self._elapsed_frames() >= budget:
-                self._turn_prep_start = time.monotonic()
-                self._set_state(State.TURNING)
+            # Drive forward first, then slow prep
+            if self._elapsed_seconds() < 0.8:
+                left = right = float(getattr(self.cfg, "approach_speed", 0.23))
+            else:
+                s = float(getattr(self.cfg, "preturn_speed", 0.12))
+                left = right = s
+                budget = float(
+                    getattr(self.cfg, "preturn_left_frames", 3)
+                    if self._pick_turn() == "left"
+                    else getattr(self.cfg, "preturn_right_frames", 6)
+                )
+                if self._elapsed_frames() >= budget + 24:
+                    self._turn_prep_start = time.monotonic()
+                    self._set_state(State.TURNING)
 
         elif self.state == State.TURNING:
-            # small lane-follow prep before timed turn to avoid premature commits
-            prep_dur = float(getattr(self.cfg, "turn_prep_duration", 0.35))
-            if self._turn_prep_start is not None and (time.monotonic() - self._turn_prep_start) < prep_dur:
+            # Drive forward first if it's a forward "turn", or prepare for actual turn
+            if self._chosen_turn == "forward" and self._elapsed_seconds() < 0.8:
+                left = right = float(getattr(self.cfg, "approach_speed", 0.23))
+            elif self._turn_prep_start is not None and (time.monotonic() - self._turn_prep_start) < float(getattr(self.cfg, "turn_prep_duration", 0.35)):
                 left, right = base_left, base_right
             else:
                 turn = self._pick_turn()
@@ -321,9 +330,9 @@ class SignBehaviorFSM:
                     self._set_state(State.EXITING)
 
         elif self.state == State.EXITING:
-            s = float(getattr(self.cfg, "exit_speed", 0.40))
-            left = right = s
-            if self._elapsed_frames() >= float(getattr(self.cfg, "exit_timeout_frames", 3)):
+            # Use lane-following commands for smooth transition
+            left, right = base_left, base_right
+            if self._elapsed_frames() >= float(getattr(self.cfg, "exit_timeout_frames", 12)):
                 self._finish_behavior()
 
         self.debug = {
